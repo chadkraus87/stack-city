@@ -1,0 +1,7 @@
+.env*
+.git
+.next
+artifacts
+coverage
+docs
+tests
