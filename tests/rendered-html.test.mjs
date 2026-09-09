@@ -10,6 +10,10 @@ async function renderedHtml() {
   return readFile(resolve(projectRoot, ".next/server/app/index.html"), "utf8");
 }
 
+async function legalHtml() {
+  return readFile(resolve(projectRoot, ".next/server/app/legal.html"), "utf8");
+}
+
 test("build prerenders the complete Stack City game shell", async () => {
   const html = await renderedHtml();
   assert.match(html, /<title>Stack City — Infrastructure Strategy Game<\/title>/i);
@@ -24,6 +28,9 @@ test("build prerenders the complete Stack City game shell", async () => {
   assert.match(html, /Deterministic challenge code/);
   assert.match(html, /Load code/);
   assert.match(html, /New seed/);
+  assert.match(html, /Reliability controls/);
+  assert.match(html, /Service flow/);
+  assert.match(html, /Privacy · Terms · Accessibility/);
   assert.match(html, /aria-label="Stack City infrastructure map"/);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Your site is taking shape/);
 });
@@ -48,4 +55,15 @@ test("ships useful content and configures hardened response headers", async () =
   assert.match(nextConfig, /X-Frame-Options/);
   assert.match(nextConfig, /X-Permitted-Cross-Domain-Policies/);
   assert.match(nextConfig, /poweredByHeader:\s*false/);
+});
+
+test("prerenders transparent privacy, terms, and accessibility disclosures", async () => {
+  const html = await legalHtml();
+
+  assert.match(html, /Legal &amp; Trust Center/);
+  assert.match(html, /No accounts or profiles/);
+  assert.match(html, /does not intentionally set cookies/);
+  assert.match(html, /not directed to children under/);
+  assert.match(html, /WCAG 2\.2 Level AA/);
+  assert.match(html, /security\/advisories\/new/);
 });

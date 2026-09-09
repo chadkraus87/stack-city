@@ -43,6 +43,10 @@ it on the map, and connects it to the API request path.
   availability, errors, revenue, operating cost, and user satisfaction
 - building placement, network links, four upgrade levels, repairs, and resale
 - incidents with service damage, recovery windows, and on-call costs
+- directed request routing with animated flow direction and a live critical-path view
+- per-service utilization, latency, errors, queue depth, reachability, and health status
+- operator-controlled bounded or aggressive retries, circuit breaking, and autoscaling
+- 10% canary releases with live progress, promotion rewards, and safe rollback
 - deterministic challenge codes for replaying or sharing a scenario seed
 - bounded operational telemetry with SLO, error-budget, incident, cost, and
   architecture-score analysis
@@ -115,10 +119,11 @@ physical adjacency, controls the request path.
 
 ### 5. Connect the request path
 
-An isolated service cannot affect traffic. Select a building, choose
-**Connect**, then choose another building. Each link costs $250. A working core
-route needs Web, API, and Database services connected; optional services add
-offload, protection, observability, or asynchronous capacity.
+An isolated service cannot affect traffic. Select the upstream building, choose
+**Connect**, then choose the downstream destination. Each directed link costs
+$250. A working core route flows **DNS → Web → API → Database**. Optional
+services must also be reachable from DNS to add offload, protection,
+observability, or asynchronous capacity. Arrowheads show flow direction.
 
 ### 6. Scale the bottleneck
 
@@ -135,7 +140,25 @@ latency, errors, and availability until the incident expires. A connected
 Watchtower reduces incident impact and represents metrics, logs, traces, and
 actionable alerting.
 
-### 8. Review the run
+### 8. Operate for reliability
+
+The Reliability Controls panel turns production tradeoffs into gameplay:
+
+- **Bounded retries** recover a controlled share of transient failures while
+  adding a little load and latency. **Aggressive retries** recover more under
+  light load but can amplify saturation.
+- **Circuit breaker** sheds a bounded amount of excess demand and limits
+  cascading service damage during overload.
+- **Autoscaler** buys temporary compute capacity as demand climbs above 70%,
+  improving headroom at an explicit operating cost.
+- **Canary release** shifts 10% of traffic to an eligible Web, API, or Worker
+  service. Let the health check reach 100% to promote, or roll back safely.
+  Failed canary health checks roll back automatically.
+
+The Service Flow panel shows each service's live status and utilization. The
+critical-path badge identifies the route that currently serves user requests.
+
+### 9. Review the run
 
 Choose **Run review** at any time to pause and inspect the current operation.
 Completing the campaign or losing the city opens the after-action review
@@ -227,8 +250,9 @@ in the browser's `localStorage`. This data never leaves the device, is treated
 as untrusted input, and is validated before restoration. The parsers reject
 oversized payloads, invalid numeric ranges, duplicate IDs, overlapping
 buildings, forged connections, malformed events or telemetry, forged challenge
-codes, and unknown catalog data. Version 1 and version 2 saves migrate locally
-to the current schema. Starting a new city replaces the active save but keeps
+codes, and unknown catalog data. Version 1, 2, and 3 saves migrate locally to
+the current version 4 schema; legacy links are oriented into a safe request
+flow. Starting a new city replaces the active save but keeps
 the local runbook; browser site-data controls erase both.
 The review's **Clear history** control erases only archived summaries and leaves
 the active city intact.
@@ -247,6 +271,9 @@ flowchart LR
   State --> UI
   State --> Save["Validated localStorage save"]
   Engine --> Telemetry["Bounded run telemetry"]
+  Engine --> Signals["Per-service flow signals"]
+  Controls["Retries · breaker · autoscaling"] --> Engine
+  Canary["Canary release state machine"] --> Engine
   Telemetry --> Report["After-action review"]
   Report --> History["Validated local runbook"]
   Seed["Shareable challenge code"] --> Engine
@@ -266,6 +293,9 @@ Important files:
 - `app/globals.css` — responsive visual system
 - `tests/` — deterministic simulation and production-render checks
 - `docs/ARCHITECTURE.md` — implementation model and security notes
+- `docs/PUBLIC_LAUNCH_CHECKLIST.md` — owner actions before marketing or monetization
+- `LICENSE` — proprietary source-available terms for original Stack City work
+- `THIRD_PARTY_NOTICES.md` — production and tooling dependency notices
 
 ## Local development
 
@@ -321,6 +351,20 @@ The repository is Vercel-native and needs no environment variables:
 4. Deploy. Vercel will serve the prerendered page and apply the headers from
    `next.config.ts`.
 
+## Legal, privacy, and public launch
+
+The hosted [Legal & Trust Center](https://stack-city-eight.vercel.app/legal)
+describes the current release's privacy, terms, children's privacy,
+accessibility, and reporting posture. The game does not create accounts,
+collect payments, add analytics, or transmit gameplay records. Vercel still
+processes ordinary request data needed to host and protect the site under its
+own privacy notice.
+
+Before adding analytics, advertising, accounts, user-generated content, email,
+payments, or a mobile/desktop store build, update the data inventory and legal
+disclosures first. The owner-side decisions and go-live checks are in the
+[public launch and monetization checklist](docs/PUBLIC_LAUNCH_CHECKLIST.md).
+
 ## Contributing
 
 Keep simulation logic deterministic, centralize balance changes in the catalog,
@@ -329,5 +373,8 @@ simulation rule changes. Run `npm run check` before opening a pull request.
 
 ## License
 
-Copyright © 2026 Chad Kraus. No open-source license has been selected yet; the
-public repository is available for viewing and evaluation.
+Copyright © 2026 Chad Kraus. Original Stack City code and assets are available
+under the repository's proprietary source-available [license](LICENSE): public
+inspection is allowed, but copying, modification, redistribution, commercial
+use, or third-party hosting requires prior written permission. Third-party
+packages remain under their own licenses.

@@ -10,9 +10,11 @@ import {
   isValidGameState,
   parseChallengeCode,
   resolveIncident,
+  rollbackCanaryDeployment,
   restoreGameState,
   restoreRunHistory,
   simulateTick,
+  startCanaryDeployment,
 } from "../app/game/engine.ts";
 import type { Building, Connection, GameState, Incident } from "../app/game/types.ts";
 
@@ -48,6 +50,25 @@ test("only connected caches offload the database and lower latency", () => {
   assert.ok(withCache.cacheHitRate > 0.3);
   assert.ok(withCache.capacity > withoutCache.capacity);
   assert.ok(withCache.latency < withoutCache.latency);
+});
+
+test("request routing is directional and rejects a reversed core path", () => {
+  const initial = createInitialState();
+  const reversed: GameState = {
+    ...initial,
+    connections: initial.connections.map((connection) => ({
+      ...connection,
+      from: connection.to,
+      to: connection.from,
+    })),
+  };
+  const metrics = calculateMetrics(reversed);
+
+  assert.equal(metrics.routeComplete, false);
+  assert.equal(metrics.served, 0);
+  assert.deepEqual(metrics.criticalPath, []);
+  assert.equal(metrics.serviceSignals.find((signal) => signal.buildingId === "web-1")?.reachable, false);
+  assert.equal(analyzeBottleneck({ ...reversed, metrics }).kind, "route");
 });
 
 test("a load balancer makes replicated API capacity fully effective", () => {
@@ -105,6 +126,115 @@ test("operations scenarios create distinct, deterministic pressure profiles", ()
   assert.equal(chaosLab.money, 32000);
   assert.ok(calculateMetrics(launchDay).traffic > calculateMetrics(growth).traffic);
   assert.deepEqual(calculateMetrics(launchDay), calculateMetrics(launchDay));
+});
+
+test("service observability identifies the directed critical path and bottleneck", () => {
+  const initial = { ...createInitialState(), tick: 1000 };
+  const metrics = calculateMetrics(initial);
+  const criticalSignals = metrics.serviceSignals.filter((signal) => signal.onCriticalPath);
+  const database = metrics.serviceSignals.find((signal) => signal.buildingId === "db-1");
+
+  assert.deepEqual(metrics.criticalPath, ["dns-1", "web-1", "api-1", "db-1"]);
+  assert.equal(criticalSignals.length, 4);
+  assert.ok(database);
+  assert.ok(database.utilization > 1);
+  assert.equal(database.status, "overloaded");
+  assert.equal(analyzeBottleneck({ ...initial, metrics }).kind, "database");
+});
+
+test("reliability controls make explicit recovery, shedding, and scaling tradeoffs", () => {
+  const degradedBuildings = createInitialState().buildings.map((building) => ({ ...building, health: 82 }));
+  const base = { ...createInitialState(), tick: 1000, buildings: degradedBuildings };
+  const baseline = calculateMetrics(base);
+  const bounded = calculateMetrics({
+    ...base,
+    operations: { ...base.operations, retryPolicy: "bounded" },
+  });
+  const breaker = calculateMetrics({
+    ...base,
+    operations: { ...base.operations, circuitBreaker: true },
+  });
+  const scalableBase: GameState = {
+    ...base,
+    buildings: base.buildings.map((building) =>
+      building.kind === "database" ? { ...building, level: 4 } : building,
+    ),
+  };
+  const scalableBaseline = calculateMetrics(scalableBase);
+  const autoscaled = calculateMetrics({
+    ...scalableBase,
+    operations: { ...scalableBase.operations, autoscaling: true },
+  });
+
+  assert.ok(bounded.retryRecovery > 0);
+  assert.ok(bounded.served > baseline.served);
+  assert.ok(bounded.latency > baseline.latency);
+  assert.ok(breaker.loadShedding > 0);
+  assert.ok(breaker.operatingCost > baseline.operatingCost);
+  assert.ok(autoscaled.elasticCapacity > 0);
+  assert.ok(autoscaled.capacity > scalableBaseline.capacity);
+  assert.ok(autoscaled.operatingCost > scalableBaseline.operatingCost);
+});
+
+test("circuit breaking reduces cascading health damage under overload", () => {
+  const base = { ...createInitialState("launch-day", 100), paused: false, tick: 1400 };
+  const unprotected = simulateTick(base);
+  const protectedState = {
+    ...base,
+    operations: { ...base.operations, circuitBreaker: true },
+  };
+  const protectedTick = simulateTick(protectedState);
+  const unprotectedDatabase = unprotected.buildings.find((building) => building.id === "db-1");
+  const protectedDatabase = protectedTick.buildings.find((building) => building.id === "db-1");
+
+  assert.ok(unprotectedDatabase && protectedDatabase);
+  assert.ok(protectedDatabase.health > unprotectedDatabase.health);
+  assert.ok(protectedTick.telemetry.requestsShed > 0);
+});
+
+test("canary deployments can be promoted, rolled back, or automatically stopped", () => {
+  const initial = { ...createInitialState(), paused: false };
+  const started = startCanaryDeployment(initial, "web-1");
+
+  assert.equal(started.release.status, "canary");
+  assert.equal(started.money, initial.money - 1_200);
+  assert.equal(started.telemetry.canariesStarted, 1);
+
+  let promoted = started;
+  for (let index = 0; index < 25; index += 1) promoted = simulateTick(promoted);
+  assert.equal(promoted.release.status, "idle");
+  assert.equal(promoted.release.revision, 1);
+  assert.equal(promoted.telemetry.canariesCompleted, 1);
+
+  const restarted = startCanaryDeployment(promoted, "api-1");
+  const rolledBack = rollbackCanaryDeployment(restarted);
+  assert.equal(rolledBack.release.status, "idle");
+  assert.equal(rolledBack.telemetry.canariesRolledBack, 1);
+
+  const unhealthyBase = createInitialState();
+  const unhealthyBuildings = unhealthyBase.buildings.map((building) =>
+    building.id === "web-1" ? { ...building, health: 0.1 } : building,
+  );
+  const unhealthyState: GameState = {
+    ...unhealthyBase,
+    paused: false,
+    buildings: unhealthyBuildings,
+    incidents: [{
+      id: "canary-failure",
+      buildingId: "web-1",
+      title: "Synthetic canary fault",
+      message: "Forces the canary health check to fail.",
+      severity: "critical",
+      remaining: 4,
+      startedAt: 0,
+    }],
+  };
+  unhealthyState.metrics = calculateMetrics(unhealthyState);
+  const autoStarted = startCanaryDeployment(unhealthyState, "web-1");
+  const autoRolledBack = simulateTick(autoStarted);
+  assert.equal(autoRolledBack.release.status, "idle");
+  assert.equal(autoRolledBack.release.revision, 0);
+  assert.equal(autoRolledBack.telemetry.canariesRolledBack, 1);
 });
 
 test("challenge codes round-trip a scenario and deterministic 32-bit seed", () => {
@@ -211,6 +341,14 @@ test("save validation accepts current state and rejects malformed input", () => 
     ...createInitialState(),
     telemetry: { ...createInitialState().telemetry, sampleCount: 1, availabilityTotal: 9 },
   }), false);
+  assert.equal(isValidGameState({
+    ...createInitialState(),
+    operations: { retryPolicy: "infinite", circuitBreaker: true, autoscaling: true },
+  }), false);
+  assert.equal(isValidGameState({
+    ...createInitialState(),
+    release: { status: "canary", targetBuildingId: "db-1", progress: 150, revision: -1 },
+  }), false);
 });
 
 test("version 1 saves migrate safely to the current growth scenario", () => {
@@ -221,7 +359,7 @@ test("version 1 saves migrate safely to the current growth scenario", () => {
   const restored = restoreGameState(legacy);
 
   assert.ok(restored);
-  assert.equal(restored.version, 3);
+  assert.equal(restored.version, 4);
   assert.equal(restored.scenario, "growth");
   assert.equal(restored.challengeSeed, 82491);
   assert.equal(restored.telemetry.sampleCount, 0);
@@ -238,8 +376,40 @@ test("version 2 saves migrate without trusting missing telemetry", () => {
   const restored = restoreGameState(legacy);
 
   assert.ok(restored);
-  assert.equal(restored.version, 3);
+  assert.equal(restored.version, 4);
   assert.equal(restored.scenario, "launch-day");
   assert.equal(restored.challengeSeed, 82491);
   assert.equal(restored.telemetry.sampleCount, 0);
+});
+
+test("version 3 saves gain safe operations defaults and directed links", () => {
+  const current = createInitialState();
+  const legacy: Record<string, unknown> = {
+    ...current,
+    version: 3,
+    connections: current.connections.map((connection) => ({
+      ...connection,
+      from: connection.to,
+      to: connection.from,
+    })),
+  };
+  delete legacy.operations;
+  delete legacy.release;
+
+  const restored = restoreGameState(legacy);
+
+  assert.ok(restored);
+  assert.equal(restored.version, 4);
+  assert.deepEqual(restored.operations, {
+    retryPolicy: "off",
+    circuitBreaker: false,
+    autoscaling: false,
+  });
+  assert.equal(restored.release.status, "idle");
+  assert.equal(restored.metrics.routeComplete, true);
+  assert.deepEqual(restored.connections.map(({ from, to }) => [from, to]), [
+    ["dns-1", "web-1"],
+    ["web-1", "api-1"],
+    ["api-1", "db-1"],
+  ]);
 });

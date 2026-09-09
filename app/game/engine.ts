@@ -21,6 +21,7 @@ import type {
   RunSummary,
   RunTelemetry,
   ScenarioId,
+  ServiceSignal,
   TelemetrySample,
 } from "./types.ts";
 import { BUILDING_KINDS } from "./types.ts";
@@ -38,6 +39,11 @@ const EMPTY_METRICS: Metrics = {
   operatingCost: 0,
   revenue: 0,
   architectureScore: 0,
+  retryRecovery: 0,
+  loadShedding: 0,
+  elasticCapacity: 0,
+  criticalPath: [],
+  serviceSignals: [],
 };
 
 const DEFAULT_CHALLENGE_SEED = 82491;
@@ -65,6 +71,12 @@ function createEmptyTelemetry(): RunTelemetry {
     peakLatency: 0,
     peakSaturation: 0,
     minimumAvailability: 1,
+    retryRecoveries: 0,
+    requestsShed: 0,
+    autoscaleTicks: 0,
+    canariesStarted: 0,
+    canariesCompleted: 0,
+    canariesRolledBack: 0,
     architectureHistory: [],
   };
 }
@@ -91,7 +103,7 @@ export function createInitialState(
     ? Math.max(0, Math.min(0xffffffff, challengeSeed)) >>> 0
     : DEFAULT_CHALLENGE_SEED;
   const base: GameState = {
-    version: 3,
+    version: 4,
     scenario,
     challengeSeed: normalizedSeed,
     seed: normalizedSeed,
@@ -122,6 +134,17 @@ export function createInitialState(
     reportRecorded: false,
     metrics: { ...EMPTY_METRICS },
     telemetry: createEmptyTelemetry(),
+    operations: {
+      retryPolicy: "off",
+      circuitBreaker: false,
+      autoscaling: false,
+    },
+    release: {
+      status: "idle",
+      targetBuildingId: null,
+      progress: 0,
+      revision: 0,
+    },
     settings: { sound: true, reducedMotion: false, highContrast: false },
   };
   return { ...base, metrics: calculateMetrics(base) };
@@ -151,7 +174,6 @@ export function connectedBuildingIds(
   for (const building of buildings) adjacency.set(building.id, []);
   for (const connection of connections) {
     adjacency.get(connection.from)?.push(connection.to);
-    adjacency.get(connection.to)?.push(connection.from);
   }
   const visited = new Set<string>();
   const queue = [...starts];
@@ -164,6 +186,50 @@ export function connectedBuildingIds(
     }
   }
   return visited;
+}
+
+function directedAdjacency(buildings: Building[], connections: Connection[]): Map<string, string[]> {
+  const adjacency = new Map<string, string[]>();
+  for (const building of buildings) adjacency.set(building.id, []);
+  for (const connection of connections) adjacency.get(connection.from)?.push(connection.to);
+  return adjacency;
+}
+
+function findDirectedPath(
+  fromIds: string[],
+  targetIds: Set<string>,
+  adjacency: Map<string, string[]>,
+): string[] {
+  const queue = fromIds.map((id) => [id]);
+  const visited = new Set<string>();
+  while (queue.length > 0) {
+    const path = queue.shift();
+    const current = path?.at(-1);
+    if (!path || !current || visited.has(current)) continue;
+    if (targetIds.has(current)) return path;
+    visited.add(current);
+    for (const neighbor of adjacency.get(current) ?? []) {
+      if (!visited.has(neighbor)) queue.push([...path, neighbor]);
+    }
+  }
+  return [];
+}
+
+function findCriticalPath(
+  buildings: Building[],
+  connections: Connection[],
+): string[] {
+  const adjacency = directedAdjacency(buildings, connections);
+  const dnsIds = buildings.filter((building) => building.kind === "dns" && building.health > 0).map((building) => building.id);
+  const frontendIds = new Set(buildings.filter((building) => building.kind === "frontend" && building.health > 0).map((building) => building.id));
+  const toFrontend = findDirectedPath(dnsIds, frontendIds, adjacency);
+  if (toFrontend.length === 0) return [];
+  const apiIds = new Set(buildings.filter((building) => building.kind === "api" && building.health > 0).map((building) => building.id));
+  const toApi = findDirectedPath([toFrontend.at(-1) as string], apiIds, adjacency);
+  if (toApi.length === 0) return toFrontend;
+  const databaseIds = new Set(buildings.filter((building) => building.kind === "database" && building.health > 0).map((building) => building.id));
+  const toDatabase = findDirectedPath([toApi.at(-1) as string], databaseIds, adjacency);
+  return [...toFrontend, ...toApi.slice(1), ...toDatabase.slice(1)];
 }
 
 function hasKind(buildings: Building[], kind: BuildingKind): boolean {
@@ -179,6 +245,8 @@ function sumCapacity(buildings: Building[], kind: BuildingKind): number {
 export function calculateMetrics(state: GameState): Metrics {
   const scenario = SCENARIOS[state.scenario];
   const connectedIds = connectedBuildingIds(state.buildings, state.connections);
+  const criticalPath = findCriticalPath(state.buildings, state.connections);
+  const criticalPathIds = new Set(criticalPath);
   const active = state.buildings.filter(
     (building) => connectedIds.has(building.id) && building.health > 0,
   );
@@ -187,16 +255,22 @@ export function calculateMetrics(state: GameState): Metrics {
     scenario.baseTraffic,
     scenario.baseTraffic + state.tick * scenario.trafficGrowth + waveFloor,
   );
-  const frontends = active.filter((building) => building.kind === "frontend");
   const apis = active.filter((building) => building.kind === "api");
   const databases = active.filter((building) => building.kind === "database");
-  const routeComplete = frontends.length > 0 && apis.length > 0 && databases.length > 0;
+  const pathKinds = new Set(
+    criticalPath
+      .map((id) => state.buildings.find((building) => building.id === id)?.kind)
+      .filter(Boolean),
+  );
+  const routeComplete = pathKinds.has("frontend")
+    && pathKinds.has("api")
+    && pathKinds.has("database");
 
   const cacheCount = active.filter((building) => building.kind === "cache").length;
   const cdnCount = active.filter((building) => building.kind === "cdn").length;
   const loadBalancerCount = active.filter((building) => building.kind === "loadBalancer").length;
   const queueCount = active.filter((building) => building.kind === "queue").length;
-  const workerCapacity = sumCapacity(active, "worker");
+  const rawWorkerCapacity = sumCapacity(active, "worker");
   const monitorCount = active.filter((building) => building.kind === "monitoring").length;
   const storageCount = active.filter((building) => building.kind === "storage").length;
   const searchCount = active.filter((building) => building.kind === "search").length;
@@ -204,19 +278,51 @@ export function calculateMetrics(state: GameState): Metrics {
 
   const cacheHitRate = Math.min(0.72, cacheCount * 0.32 + Math.max(0, cacheCount - 1) * 0.08);
   const cdnOffload = Math.min(0.52, cdnCount * 0.27);
-  const frontendCapacity = sumCapacity(active, "frontend") / Math.max(0.48, 1 - cdnOffload);
+  const canaryTarget = state.release.status === "canary"
+    ? state.buildings.find((building) => building.id === state.release.targetBuildingId)
+    : null;
+  const frontendCanaryFactor = canaryTarget?.kind === "frontend" ? 0.9 : 1;
+  const apiCanaryFactor = canaryTarget?.kind === "api" ? 0.9 : 1;
+  const workerCanaryFactor = canaryTarget?.kind === "worker" ? 0.9 : 1;
+  const frontendCapacity = sumCapacity(active, "frontend")
+    / Math.max(0.48, 1 - cdnOffload)
+    * frontendCanaryFactor;
   const rawApiCapacity = sumCapacity(active, "api");
   const apiScaling = apis.length > 1 && loadBalancerCount === 0 ? 0.68 : 1;
-  const apiCapacity = rawApiCapacity * apiScaling;
+  const apiCapacity = rawApiCapacity * apiScaling * apiCanaryFactor;
   const specializedDataOffload = Math.min(0.2, storageCount * 0.06 + searchCount * 0.05);
   const databaseCapacity = sumCapacity(active, "database")
     / Math.max(0.3, 1 - cacheHitRate * 0.78 - specializedDataOffload);
+  const workerCapacity = rawWorkerCapacity * workerCanaryFactor;
   const asyncCapacity = queueCount > 0 && workerCapacity > 0 ? workerCapacity * 0.35 : 0;
-  const capacity = routeComplete
+  const baseCapacity = routeComplete
     ? Math.max(0, Math.min(frontendCapacity, apiCapacity + asyncCapacity, databaseCapacity))
     : 0;
-
-  const saturation = capacity > 0 ? traffic / capacity : 2;
+  const computeCapacity = Math.min(frontendCapacity, apiCapacity + asyncCapacity);
+  const computeSaturation = computeCapacity > 0 ? traffic / computeCapacity : 2;
+  const autoscaleFactor = state.operations.autoscaling && computeCapacity > 0
+    ? Math.min(1.45, 1 + Math.max(0, computeSaturation - 0.7) * 0.72)
+    : 1;
+  const capacity = routeComplete
+    ? Math.max(0, Math.min(
+      frontendCapacity * autoscaleFactor,
+      (apiCapacity + asyncCapacity) * autoscaleFactor,
+      databaseCapacity,
+    ))
+    : 0;
+  const elasticCapacity = Math.max(0, capacity - baseCapacity);
+  const loadSheddingRatio = state.operations.circuitBreaker && capacity > 0
+    ? Math.min(0.24, Math.max(0, traffic / capacity - 0.9) * 0.42)
+    : 0;
+  const loadShedding = traffic * loadSheddingRatio;
+  const acceptedTraffic = Math.max(0, traffic - loadShedding);
+  const retryLoadRatio = state.operations.retryPolicy === "bounded"
+    ? 0.035
+    : state.operations.retryPolicy === "aggressive"
+      ? 0.09
+      : 0;
+  const retryLoad = acceptedTraffic * retryLoadRatio;
+  const saturation = capacity > 0 ? (acceptedTraffic + retryLoad) / capacity : 2;
   const incidentPenalty = state.incidents.reduce(
     (total, incident) => total + (incident.severity === "critical" ? 0.16 : 0.07),
     0,
@@ -228,10 +334,27 @@ export function calculateMetrics(state: GameState): Metrics {
     ? active.reduce((total, building) => total + BUILDINGS[building.kind].reliability, 0) / active.length
     : 0;
   const monitoringProtection = Math.min(0.09, monitorCount * 0.045);
+  const breakerProtection = state.operations.circuitBreaker && saturation > 0.88 ? 0.035 : 0;
   const availability = routeComplete
-    ? Math.max(0, Math.min(0.9999, averageReliability * averageHealth - incidentPenalty + monitoringProtection))
+    ? Math.max(0, Math.min(
+      0.9999,
+      averageReliability * averageHealth
+        - incidentPenalty * (state.operations.circuitBreaker ? 0.72 : 1)
+        + monitoringProtection
+        + breakerProtection,
+    ))
     : 0;
-  const served = Math.min(traffic, capacity) * availability;
+  const initiallyServed = Math.min(acceptedTraffic, capacity) * availability;
+  const retryEffectiveness = state.operations.retryPolicy === "bounded"
+    ? 0.48
+    : state.operations.retryPolicy === "aggressive"
+      ? saturation > 1.15 ? 0.12 : 0.72
+      : 0;
+  const retryRecovery = Math.min(
+    Math.max(0, acceptedTraffic - initiallyServed),
+    Math.max(0, capacity - initiallyServed),
+  ) * retryEffectiveness;
+  const served = Math.min(traffic, initiallyServed + retryRecovery);
   const errorRate = traffic > 0 ? Math.max(0, 1 - served / traffic) : 0;
 
   const baseLatency = 174
@@ -244,14 +367,25 @@ export function calculateMetrics(state: GameState): Metrics {
     (total, incident) => total + (incident.severity === "critical" ? 145 : 55),
     0,
   );
+  const retryLatency = state.operations.retryPolicy === "bounded"
+    ? 12
+    : state.operations.retryPolicy === "aggressive"
+      ? 34
+      : 0;
+  const canaryLatency = state.release.status === "canary" ? 10 : 0;
   const latency = routeComplete
-    ? Math.max(42, baseLatency + saturationPenalty + incidentLatency)
+    ? Math.max(42, baseLatency + saturationPenalty + incidentLatency + retryLatency + canaryLatency)
     : 0;
 
-  const operatingCost = state.buildings.reduce(
+  const infrastructureCost = state.buildings.reduce(
     (total, building) => total + BUILDINGS[building.kind].upkeep * (1 + (building.level - 1) * 0.48),
     0,
   );
+  const operatingCost = infrastructureCost
+    + elasticCapacity * 1.6
+    + retryLoad * 0.85
+    + (state.operations.circuitBreaker ? 22 : 0)
+    + (state.release.status === "canary" ? 85 : 0);
   const trustMultiplier = 1 + Math.min(0.09, authCount * 0.045);
   const revenue = served
     * 2.15
@@ -260,10 +394,86 @@ export function calculateMetrics(state: GameState): Metrics {
     * scenario.revenueMultiplier;
 
   const redundancy = Math.min(18, Math.max(0, apis.length - 1) * 6 + Math.max(0, databases.length - 1) * 8);
-  const capabilityKinds: BuildingKind[] = ["cache", "cdn", "loadBalancer", "queue", "worker", "monitoring", "auth", "storage"];
+  const capabilityKinds: BuildingKind[] = ["cache", "cdn", "loadBalancer", "queue", "worker", "monitoring", "auth", "storage", "search"];
   const capabilities = capabilityKinds.filter((kind) => hasKind(active, kind)).length * 4;
   const performance = Math.max(0, 25 - errorRate * 120 - Math.max(0, latency - 180) / 18);
-  const architectureScore = Math.round(Math.min(100, 24 + redundancy + capabilities + performance));
+  const operationalMaturity = Number(state.operations.circuitBreaker) * 2
+    + Number(state.operations.autoscaling) * 2
+    + Number(state.operations.retryPolicy !== "off") * 1
+    + Math.min(2, state.release.revision);
+  const architectureScore = Math.round(Math.min(
+    100,
+    24 + redundancy + capabilities + performance + operationalMaturity,
+  ));
+
+  const demandByKind: Partial<Record<BuildingKind, number>> = {
+    dns: traffic,
+    cdn: traffic * cdnOffload,
+    loadBalancer: acceptedTraffic,
+    frontend: acceptedTraffic * (1 - cdnOffload),
+    auth: acceptedTraffic * Math.min(1, authCount),
+    api: acceptedTraffic + retryLoad,
+    cache: acceptedTraffic * cacheHitRate,
+    database: acceptedTraffic * Math.max(0.18, 1 - cacheHitRate - specializedDataOffload),
+    queue: Math.max(0, acceptedTraffic - apiCapacity),
+    worker: Math.min(Math.max(0, acceptedTraffic - apiCapacity), workerCapacity),
+    storage: acceptedTraffic * Math.min(0.18, storageCount * 0.06),
+    search: acceptedTraffic * Math.min(0.15, searchCount * 0.05),
+    monitoring: acceptedTraffic * Math.min(1, monitorCount),
+  };
+  const kindCapacities = new Map<BuildingKind, number>();
+  for (const building of active) {
+    kindCapacities.set(
+      building.kind,
+      (kindCapacities.get(building.kind) ?? 0) + buildingCapacity(building),
+    );
+  }
+  const incidentIds = new Set(state.incidents.map((incident) => incident.buildingId));
+  const serviceSignals: ServiceSignal[] = state.buildings.map((building) => {
+    const reachable = connectedIds.has(building.id) && building.health > 0;
+    const rawCapacity = buildingCapacity(building);
+    const canaryFactor = state.release.status === "canary"
+      && state.release.targetBuildingId === building.id ? 0.9 : 1;
+    const elasticFactor = state.operations.autoscaling
+      && (building.kind === "frontend" || building.kind === "api" || building.kind === "worker")
+      ? autoscaleFactor
+      : 1;
+    const serviceCapacity = rawCapacity * canaryFactor * elasticFactor;
+    const kindCapacity = kindCapacities.get(building.kind) ?? rawCapacity;
+    const incoming = reachable
+      ? (demandByKind[building.kind] ?? 0) * (rawCapacity / Math.max(1, kindCapacity))
+      : 0;
+    const utilization = serviceCapacity > 0 ? incoming / serviceCapacity : 0;
+    const serviceServed = Math.min(incoming, serviceCapacity);
+    const serviceErrorRate = incoming > 0 ? Math.max(0, 1 - serviceServed / incoming) : 0;
+    const queueDepth = building.kind === "queue" ? Math.max(0, incoming - serviceServed) : 0;
+    const serviceLatency = reachable
+      ? Math.max(1, BUILDINGS[building.kind].latency + Math.max(0, utilization - 0.75) ** 2 * 180)
+      : 0;
+    const status: ServiceSignal["status"] = !reachable
+      ? "offline"
+      : incidentIds.has(building.id)
+        ? "incident"
+        : utilization > 1
+          ? "overloaded"
+          : utilization > 0.82
+            ? "stressed"
+            : "healthy";
+    return {
+      buildingId: building.id,
+      kind: building.kind,
+      incoming,
+      served: serviceServed,
+      capacity: serviceCapacity,
+      utilization,
+      latency: serviceLatency,
+      errorRate: serviceErrorRate,
+      queueDepth,
+      reachable,
+      onCriticalPath: criticalPathIds.has(building.id),
+      status,
+    };
+  });
 
   return {
     traffic,
@@ -278,6 +488,11 @@ export function calculateMetrics(state: GameState): Metrics {
     operatingCost,
     revenue,
     architectureScore,
+    retryRecovery,
+    loadShedding,
+    elasticCapacity,
+    criticalPath,
+    serviceSignals,
   };
 }
 
@@ -347,8 +562,11 @@ function evaluateAchievements(state: GameState, metrics: Metrics): [Achievement[
 }
 
 function createIncident(state: GameState, random: number): Incident | null {
+  const connectedIds = connectedBuildingIds(state.buildings, state.connections);
   const candidates = state.buildings.filter(
-    (building) => building.health > 20 && !state.incidents.some((incident) => incident.buildingId === building.id),
+    (building) => connectedIds.has(building.id)
+      && building.health > 20
+      && !state.incidents.some((incident) => incident.buildingId === building.id),
   );
   if (candidates.length === 0) return null;
   const building = candidates[Math.floor(random * candidates.length) % candidates.length];
@@ -406,6 +624,12 @@ function updateTelemetry(
     minimumAvailability: telemetry.sampleCount === 0
       ? metrics.availability
       : Math.min(telemetry.minimumAvailability, metrics.availability),
+    retryRecoveries: telemetry.retryRecoveries + metrics.retryRecovery,
+    requestsShed: telemetry.requestsShed + metrics.loadShedding,
+    autoscaleTicks: telemetry.autoscaleTicks + Number(metrics.elasticCapacity > 0),
+    canariesStarted: telemetry.canariesStarted,
+    canariesCompleted: telemetry.canariesCompleted,
+    canariesRolledBack: telemetry.canariesRolledBack,
     architectureHistory,
   };
 }
@@ -424,7 +648,7 @@ export function simulateTick(state: GameState): GameState {
     events.unshift({
       id: `auto-recover-${tick}`,
       tick,
-      tone: "info",
+      tone: "info" as const,
       message: "An incident auto-recovered after its retry window.",
     });
   }
@@ -437,7 +661,11 @@ export function simulateTick(state: GameState): GameState {
   );
   const incidentChance = Math.min(
     0.78,
-    (0.2 + state.wave * 0.055) * scenario.incidentRisk,
+    (0.2 + state.wave * 0.055)
+      * scenario.incidentRisk
+      * (state.operations.circuitBreaker ? 0.82 : 1)
+      * (state.release.status === "canary" ? 1.08 : 1)
+      * (state.operations.retryPolicy === "aggressive" ? 1.12 : 1),
   );
   let incidentsStarted = 0;
   if (tick > 18 && tick % incidentInterval === 0 && random < incidentChance) {
@@ -454,25 +682,91 @@ export function simulateTick(state: GameState): GameState {
     }
   }
 
-  const stressed = metricsBefore.saturation > 1.05;
   const incidentBuildingIds = new Set(incidents.map((incident) => incident.buildingId));
   const buildings = state.buildings.map((building) => {
+    const signal = metricsBefore.serviceSignals.find((candidate) => candidate.buildingId === building.id);
+    const cascadingStress = signal?.onCriticalPath && signal.utilization > 1.02;
     let damage = 0;
     if (incidentBuildingIds.has(building.id)) damage += 0.85;
-    if (stressed && (building.kind === "api" || building.kind === "database")) damage += Math.min(0.7, (metricsBefore.saturation - 1) * 0.5);
-    if (!stressed && !incidentBuildingIds.has(building.id) && building.health < 100) damage -= 0.08;
+    if (cascadingStress) {
+      const retryAmplification = state.operations.retryPolicy === "aggressive" ? 1.28 : 1;
+      const breakerReduction = state.operations.circuitBreaker ? 0.52 : 1;
+      damage += Math.min(0.78, (signal.utilization - 1) * 0.55)
+        * retryAmplification
+        * breakerReduction;
+    }
+    if (!cascadingStress && !incidentBuildingIds.has(building.id) && building.health < 100) damage -= 0.08;
     return { ...building, health: Math.max(0, Math.min(100, building.health - damage)) };
   });
 
-  let next: GameState = { ...state, seed, tick, buildings, incidents, events };
+  let release = state.release;
+  let releaseBuildings = buildings;
+  let releaseXp = 0;
+  let canaryOutcome: "completed" | "rolled-back" | null = null;
+  if (release.status === "canary") {
+    const target = buildings.find((building) => building.id === release.targetBuildingId);
+    if (!target || target.health <= 0) {
+      release = {
+        status: "idle",
+        targetBuildingId: null,
+        progress: 0,
+        revision: release.revision,
+      };
+      canaryOutcome = "rolled-back";
+      events.unshift({
+        id: `canary-auto-rollback-${tick}`,
+        tick,
+        tone: "bad",
+        message: "Canary health check failed. The release was rolled back automatically.",
+      });
+    } else if (release.progress + 4 >= 100) {
+      releaseBuildings = buildings.map((building) =>
+        building.id === release.targetBuildingId
+          ? { ...building, health: Math.min(100, building.health + 8) }
+          : building,
+      );
+      const releasedBuilding = buildings.find((building) => building.id === release.targetBuildingId);
+      release = {
+        status: "idle",
+        targetBuildingId: null,
+        progress: 0,
+        revision: release.revision + 1,
+      };
+      releaseXp = 90;
+      canaryOutcome = "completed";
+      events.unshift({
+        id: `canary-promoted-${tick}`,
+        tick,
+        tone: "good",
+        message: `${releasedBuilding ? BUILDINGS[releasedBuilding.kind].name : "Service"} canary promoted to revision ${release.revision}.`,
+      });
+    } else {
+      release = { ...release, progress: release.progress + 4 };
+    }
+  }
+
+  let next: GameState = {
+    ...state,
+    seed,
+    tick,
+    buildings: releaseBuildings,
+    incidents,
+    events,
+    release,
+  };
   const metrics = calculateMetrics(next);
-  const telemetry = updateTelemetry(
+  let telemetry = updateTelemetry(
     state.telemetry,
     metrics,
     tick,
     incidentsStarted,
     expiredIncidents,
   );
+  if (canaryOutcome === "completed") {
+    telemetry = { ...telemetry, canariesCompleted: telemetry.canariesCompleted + 1 };
+  } else if (canaryOutcome === "rolled-back") {
+    telemetry = { ...telemetry, canariesRolledBack: telemetry.canariesRolledBack + 1 };
+  }
   const net = metrics.revenue - metrics.operatingCost / 12;
   const quality = metrics.routeComplete
     ? 100 - metrics.errorRate * 120 - Math.max(0, metrics.latency - 180) / 10
@@ -480,7 +774,7 @@ export function simulateTick(state: GameState): GameState {
   const satisfaction = Math.max(0, Math.min(100, state.satisfaction * 0.94 + quality * 0.06));
   let money = state.money + net;
   const lifetimeRevenue = state.lifetimeRevenue + metrics.revenue;
-  let xp = state.xp + metrics.served * 0.025;
+  let xp = state.xp + metrics.served * 0.025 + releaseXp;
   let objectiveIndex = state.objectiveIndex;
 
   next = { ...next, money, lifetimeRevenue, satisfaction, xp, metrics, telemetry };
@@ -513,7 +807,7 @@ export function simulateTick(state: GameState): GameState {
     events.unshift({
       id: `wave-${wave}-${tick}`,
       tick,
-      tone: "info",
+      tone: "info" as const,
       message: `Traffic wave ${wave} incoming. Demand has increased.`,
     });
   }
@@ -535,6 +829,61 @@ export function simulateTick(state: GameState): GameState {
     ...next,
     achievements,
     events: [...achievementEvents, ...next.events].slice(0, 18),
+  };
+}
+
+export function startCanaryDeployment(state: GameState, buildingId: string): GameState {
+  if (state.release.status === "canary" || state.money < 1_200) return state;
+  const target = state.buildings.find((building) => building.id === buildingId);
+  const signal = calculateMetrics(state).serviceSignals.find((candidate) => candidate.buildingId === buildingId);
+  const eligible = target
+    && (target.kind === "frontend" || target.kind === "api" || target.kind === "worker")
+    && signal?.reachable;
+  const cost = 1_200;
+  if (!eligible) return state;
+  return {
+    ...state,
+    money: state.money - cost,
+    release: {
+      ...state.release,
+      status: "canary",
+      targetBuildingId: buildingId,
+      progress: 0,
+    },
+    telemetry: {
+      ...state.telemetry,
+      canariesStarted: state.telemetry.canariesStarted + 1,
+    },
+    events: [{
+      id: `canary-started-${state.tick}-${buildingId}`,
+      tick: state.tick,
+      tone: "info" as const,
+      message: `${BUILDINGS[target.kind].name} canary started with 10% traffic.`,
+    }, ...state.events].slice(0, 18),
+  };
+}
+
+export function rollbackCanaryDeployment(state: GameState): GameState {
+  if (state.release.status !== "canary") return state;
+  const target = state.buildings.find((building) => building.id === state.release.targetBuildingId);
+  return {
+    ...state,
+    release: {
+      ...state.release,
+      status: "idle",
+      targetBuildingId: null,
+      progress: 0,
+    },
+    telemetry: {
+      ...state.telemetry,
+      canariesRolledBack: state.telemetry.canariesRolledBack + 1,
+    },
+    events: [{
+      id: `canary-rollback-${state.tick}`,
+      tick: state.tick,
+      tone: "info" as const,
+      message: `${target ? BUILDINGS[target.kind].name : "Service"} canary rolled back with no user-data impact.`,
+    }, ...state.events].slice(0, 18),
   };
 }
 
@@ -634,13 +983,15 @@ export function analyzeBottleneck(state: GameState): BottleneckAnalysis {
     { present: apis.length > 0, label: "API tier" },
     { present: databases.length > 0, label: "Database tier" },
   ].find((layer) => !layer.present);
-  if (missing) {
+  if (missing || !state.metrics.routeComplete) {
     return {
       kind: "route",
-      label: missing.label,
+      label: missing?.label ?? "Directed core route",
       capacity: 0,
       utilization: 2,
-      explanation: `${missing.label} is missing from the connected request path.`,
+      explanation: missing
+        ? `${missing.label} is missing from the connected request path.`
+        : "Traffic must flow in order from DNS to Web, API, and Database.",
     };
   }
 
@@ -766,6 +1117,15 @@ export function createOperationsReport(state: GameState): OperationsReport {
       ? "Add API and database redundancy to reduce outage impact and error-budget burn."
       : "Connect a Watchtower to shorten incidents, then add redundancy to critical tiers.");
   }
+  if (telemetry.peakSaturation > 0.9 && !state.operations.autoscaling) {
+    recommendations.push("Enable the autoscaler before the next wave to add temporary compute headroom.");
+  }
+  if (errorBudgetBurn > 1 && !state.operations.circuitBreaker) {
+    recommendations.push("Enable the circuit breaker to shed overload before failures cascade down the request path.");
+  }
+  if (state.operations.retryPolicy === "aggressive" && telemetry.peakSaturation > 1) {
+    recommendations.push("Use bounded retries while saturated; aggressive retries amplify load on unhealthy services.");
+  }
   if (telemetry.peakLatency > LATENCY_SLO || state.metrics.latency > LATENCY_SLO) {
     recommendations.push(connectedKinds.has("cache")
       ? "Add a CDN or more headroom so saturation does not erase the cache latency gain."
@@ -776,7 +1136,9 @@ export function createOperationsReport(state: GameState): OperationsReport {
     recommendations.push(`Connect or decommission ${isolatedCount} isolated service${isolatedCount === 1 ? "" : "s"} to improve cost efficiency.`);
   }
   if (recommendations.length === 0) {
-    recommendations.push("Preserve capacity headroom and add critical-service replicas before the next traffic wave.");
+    recommendations.push(state.release.revision === 0
+      ? "Ship a monitored canary on a compute service before the next traffic wave."
+      : "Preserve capacity headroom and add critical-service replicas before the next traffic wave.");
   }
 
   return {
@@ -853,7 +1215,7 @@ function isSafeText(value: unknown, maximumLength: number): value is string {
     });
 }
 
-function restoreTelemetry(value: unknown, gameTick: number): RunTelemetry | null {
+function restoreTelemetry(value: unknown, gameTick: number, legacyVersion = false): RunTelemetry | null {
   if (!isRecord(value)
     || !isIntegerBetween(value.sampleCount, 0, MAX_TICK)
     || !isFiniteBetween(value.totalDemand, 0, 1_000_000_000_000_000)
@@ -873,10 +1235,21 @@ function restoreTelemetry(value: unknown, gameTick: number): RunTelemetry | null
     || !isFiniteBetween(value.peakLatency, 0, 10_000_000)
     || !isFiniteBetween(value.peakSaturation, 0, 1_000_000)
     || !isFiniteBetween(value.minimumAvailability, 0, 1)
+    || (!legacyVersion && !isFiniteBetween(value.retryRecoveries, 0, 1_000_000_000_000_000))
+    || (!legacyVersion && !isFiniteBetween(value.requestsShed, 0, 1_000_000_000_000_000))
+    || (!legacyVersion && !isIntegerBetween(value.autoscaleTicks, 0, MAX_TICK))
+    || (!legacyVersion && !isIntegerBetween(value.canariesStarted, 0, MAX_TICK))
+    || (!legacyVersion && !isIntegerBetween(value.canariesCompleted, 0, MAX_TICK))
+    || (!legacyVersion && !isIntegerBetween(value.canariesRolledBack, 0, MAX_TICK))
     || !Array.isArray(value.architectureHistory)
     || value.architectureHistory.length > MAX_ARCHITECTURE_SAMPLES) {
     return null;
   }
+  if (!legacyVersion && (
+    (value.autoscaleTicks as number) > (value.sampleCount as number)
+    || (value.canariesCompleted as number) + (value.canariesRolledBack as number)
+      > (value.canariesStarted as number)
+  )) return null;
 
   const architectureHistory: TelemetrySample[] = [];
   let previousTick = -1;
@@ -917,6 +1290,12 @@ function restoreTelemetry(value: unknown, gameTick: number): RunTelemetry | null
     peakLatency: value.peakLatency,
     peakSaturation: value.peakSaturation,
     minimumAvailability: value.minimumAvailability,
+    retryRecoveries: legacyVersion ? 0 : value.retryRecoveries as number,
+    requestsShed: legacyVersion ? 0 : value.requestsShed as number,
+    autoscaleTicks: legacyVersion ? 0 : value.autoscaleTicks as number,
+    canariesStarted: legacyVersion ? 0 : value.canariesStarted as number,
+    canariesCompleted: legacyVersion ? 0 : value.canariesCompleted as number,
+    canariesRolledBack: legacyVersion ? 0 : value.canariesRolledBack as number,
     architectureHistory,
   };
 }
@@ -928,7 +1307,7 @@ function restoreTelemetry(value: unknown, gameTick: number): RunTelemetry | null
  */
 export function restoreGameState(value: unknown): GameState | null {
   if (!isRecord(value)
-    || (value.version !== 1 && value.version !== 2 && value.version !== 3)) return null;
+    || (value.version !== 1 && value.version !== 2 && value.version !== 3 && value.version !== 4)) return null;
 
   const scenario = value.version === 1
     ? "growth"
@@ -936,7 +1315,7 @@ export function restoreGameState(value: unknown): GameState | null {
       ? value.scenario as ScenarioId
       : null;
   if (!scenario) return null;
-  const challengeSeed = value.version === 3
+  const challengeSeed = value.version === 3 || value.version === 4
     ? isIntegerBetween(value.challengeSeed, 0, 0xffffffff)
       ? value.challengeSeed
       : null
@@ -957,9 +1336,27 @@ export function restoreGameState(value: unknown): GameState | null {
     || !isIntegerBetween(value.objectiveIndex, 0, OBJECTIVES.length)
     || typeof value.tutorialComplete !== "boolean"
     || typeof value.gameOver !== "boolean"
-    || (value.version === 3 && typeof value.reportRecorded !== "boolean")) {
+    || ((value.version === 3 || value.version === 4) && typeof value.reportRecorded !== "boolean")) {
     return null;
   }
+
+  if (value.version === 4 && (
+    !isRecord(value.operations)
+    || (value.operations.retryPolicy !== "off"
+      && value.operations.retryPolicy !== "bounded"
+      && value.operations.retryPolicy !== "aggressive")
+    || typeof value.operations.circuitBreaker !== "boolean"
+    || typeof value.operations.autoscaling !== "boolean"
+    || !isRecord(value.release)
+    || (value.release.status !== "idle" && value.release.status !== "canary")
+    || !isIntegerBetween(value.release.progress, 0, 100)
+    || !isIntegerBetween(value.release.revision, 0, 1_000_000)
+    || (value.release.status === "idle"
+      && (value.release.targetBuildingId !== null || value.release.progress !== 0))
+    || (value.release.status === "canary"
+      && (typeof value.release.targetBuildingId !== "string"
+        || !SAFE_ID.test(value.release.targetBuildingId)))
+  )) return null;
 
   if (!Array.isArray(value.buildings) || value.buildings.length > 48) return null;
   const buildings: Building[] = [];
@@ -1012,7 +1409,29 @@ export function restoreGameState(value: unknown): GameState | null {
     if (connectionPairs.has(pair)) return null;
     connectionIds.add(candidate.id);
     connectionPairs.add(pair);
-    connections.push({ id: candidate.id, from: candidate.from, to: candidate.to });
+    let from = candidate.from;
+    let to = candidate.to;
+    if (value.version < 4) {
+      const flowStages: Record<BuildingKind, number> = {
+        dns: 0,
+        cdn: 1,
+        loadBalancer: 1,
+        frontend: 2,
+        auth: 3,
+        api: 4,
+        cache: 5,
+        database: 5,
+        search: 5,
+        storage: 5,
+        queue: 5,
+        worker: 6,
+        monitoring: 7,
+      };
+      const fromKind = buildings.find((building) => building.id === from)?.kind;
+      const toKind = buildings.find((building) => building.id === to)?.kind;
+      if (fromKind && toKind && flowStages[fromKind] > flowStages[toKind]) [from, to] = [to, from];
+    }
+    connections.push({ id: candidate.id, from, to });
   }
 
   if (!Array.isArray(value.incidents) || value.incidents.length > 48) return null;
@@ -1093,16 +1512,42 @@ export function restoreGameState(value: unknown): GameState | null {
     return null;
   }
 
-  const telemetry = value.version === 3
-    ? restoreTelemetry(value.telemetry, value.tick)
+  const telemetry = value.version === 3 || value.version === 4
+    ? restoreTelemetry(value.telemetry, value.tick, value.version === 3)
     : {
       ...createEmptyTelemetry(),
       incidentsStarted: incidents.length,
     };
   if (!telemetry) return null;
 
+  const operations = value.version === 4
+    ? {
+      retryPolicy: (value.operations as Record<string, unknown>).retryPolicy as GameState["operations"]["retryPolicy"],
+      circuitBreaker: (value.operations as Record<string, unknown>).circuitBreaker as boolean,
+      autoscaling: (value.operations as Record<string, unknown>).autoscaling as boolean,
+    }
+    : { retryPolicy: "off" as const, circuitBreaker: false, autoscaling: false };
+  const release = value.version === 4
+    ? {
+      status: (value.release as Record<string, unknown>).status as GameState["release"]["status"],
+      targetBuildingId: (value.release as Record<string, unknown>).targetBuildingId as string | null,
+      progress: (value.release as Record<string, unknown>).progress as number,
+      revision: (value.release as Record<string, unknown>).revision as number,
+    }
+    : { status: "idle" as const, targetBuildingId: null, progress: 0, revision: 0 };
+  if (release.status === "canary") {
+    const target = buildings.find((building) => building.id === release.targetBuildingId);
+    const reachable = connectedBuildingIds(buildings, connections);
+    if (!target
+      || target.health <= 0
+      || !reachable.has(target.id)
+      || (target.kind !== "frontend" && target.kind !== "api" && target.kind !== "worker")) {
+      return null;
+    }
+  }
+
   const restored: GameState = {
-    version: 3,
+    version: 4,
     scenario,
     challengeSeed,
     seed: value.seed,
@@ -1123,9 +1568,11 @@ export function restoreGameState(value: unknown): GameState | null {
     objectiveIndex: value.objectiveIndex,
     tutorialComplete: value.tutorialComplete,
     gameOver: value.gameOver,
-    reportRecorded: value.version === 3 ? value.reportRecorded as boolean : false,
+    reportRecorded: value.version === 3 || value.version === 4 ? value.reportRecorded as boolean : false,
     metrics: { ...EMPTY_METRICS },
     telemetry,
+    operations,
+    release,
     settings: {
       sound: value.settings.sound,
       reducedMotion: value.settings.reducedMotion,
@@ -1136,7 +1583,7 @@ export function restoreGameState(value: unknown): GameState | null {
 }
 
 export function isValidGameState(value: unknown): value is GameState {
-  return isRecord(value) && value.version === 3 && restoreGameState(value) !== null;
+  return isRecord(value) && value.version === 4 && restoreGameState(value) !== null;
 }
 
 export function restoreRunHistory(value: unknown): RunSummary[] {

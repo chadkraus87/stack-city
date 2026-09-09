@@ -6,8 +6,9 @@ the application as static content for Vercel; no player data leaves the browser.
 
 ## Simulation
 
-The simulation advances in fixed ticks. Every tick calculates connected
-services, route completeness, effective capacity, saturation, latency,
+The simulation advances in fixed ticks. Every tick traverses directed links
+from DNS, derives the DNS → Web → API → Database critical path, and calculates
+connected services, route completeness, effective capacity, saturation, latency,
 availability, errors, revenue, operating costs, satisfaction, and architecture
 score. A seeded pseudo-random generator makes incidents reproducible.
 
@@ -18,6 +19,20 @@ workers absorb asynchronous bursts, and monitoring reduces incident impact.
 Scenario definitions remain centralized in the catalog and change only input
 pressure—starting budget, base demand, growth, wave size, incident risk, and
 revenue—so the simulation stays deterministic and directly testable.
+
+Every placed service gets a derived `ServiceSignal`: incoming and served
+requests, capacity, utilization, latency, errors, queue depth, reachability,
+critical-path membership, and a health status. Signals are recomputed from the
+immutable game state and are never trusted from persisted metrics.
+
+Version 4 adds three reliability controls. Retries recover transient failure at
+the cost of load and latency; aggressive retry effectiveness falls under high
+saturation. Circuit breaking sheds bounded overload, protects availability, and
+reduces cascading damage. Autoscaling adds capped elastic capacity above a 70%
+utilization threshold and charges for it. Canary releases are a deterministic
+state machine: an eligible reachable Web, API, or Worker service receives 10%
+release traffic, progresses over 25 ticks, promotes on success, and rolls back
+manually or automatically after a failed health check.
 
 Each run also has an immutable `challengeSeed` alongside the evolving random
 generator state. A challenge code encodes only the scenario and seed with a
@@ -37,8 +52,9 @@ The UI stores a single immutable `GameState`. Mutations are small transition
 functions. Save data uses a versioned envelope in `localStorage`; the parser
 caps payload and collection sizes, validates every consumed scalar and nested
 record, requires unique building positions and connections, and rebuilds
-catalog-owned achievement copy. Version 1 and version 2 saves migrate to version
-3 with safe defaults for challenge and telemetry fields. Malformed or
+catalog-owned achievement copy. Version 1–3 saves migrate to version 4 with safe
+defaults for challenge, telemetry, reliability, and release fields. Legacy
+undirected connections are oriented by service stage during migration. Malformed or
 incompatible payloads are discarded. Settings are device-local and contain no
 sensitive data.
 
@@ -60,3 +76,8 @@ values. Production code does not use `dangerouslySetInnerHTML` or dynamic code
 execution. Vercel responses add CSP, clickjacking, cross-origin isolation,
 MIME-sniffing, referrer, permissions, legacy plug-in, and transport-security
 headers through `next.config.ts`.
+
+The public legal page is statically rendered and is part of the release build.
+It documents the application's local storage, Vercel's separate hosting data,
+the lack of tracking and payment collection, current permitted use, children's
+privacy posture, accessibility target, and private security-report channel.

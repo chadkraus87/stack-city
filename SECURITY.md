@@ -35,3 +35,31 @@ all Stack City data.
 
 Repository secrets and local deployment state must stay in ignored `.env*` and
 `.vercel/` paths. Never commit credentials or real user data.
+
+The version 4 save schema also validates retry controls, release progress,
+revision counters, per-run operations telemetry, and canary target eligibility.
+Legacy version 1–3 links are migrated into directed request flow; malformed
+current-version links or release state are discarded.
+
+## Security controls
+
+- Production responses use a Content Security Policy, deny framing and object
+  embedding, disable unneeded device and payment permissions, prevent MIME
+  sniffing, and enable HSTS.
+- The simulation renders typed React values and does not use raw HTML injection,
+  dynamic code evaluation, uploads, remote content, or browser credentials.
+- Public challenge codes are length-bounded, checksummed, and contain no player
+  state or identity.
+- Dependencies are pinned in `package-lock.json`; the release gate includes
+  lint, a production build, deterministic tests, rendered-output checks, and
+  dependency audits.
+- GitHub secret scanning, push protection, Dependabot alerts, and private
+  vulnerability reporting should remain enabled for the public repository.
+
+## Scope and safe testing
+
+Good-faith testing is welcome against code you run locally. Do not degrade the
+public service, access data that is not yours, use social engineering, or test
+Vercel infrastructure outside Stack City's application scope. Stop and report
+the issue if testing could affect another visitor. There is currently no paid
+bug-bounty program or promise of payment.

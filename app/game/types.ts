@@ -19,6 +19,8 @@ export type BuildingCategory = "Edge" | "Compute" | "Data" | "Platform";
 export type Severity = "warning" | "critical";
 export type GameSpeed = 0 | 1 | 2 | 4;
 export type ScenarioId = "growth" | "launch-day" | "chaos-lab";
+export type RetryPolicy = "off" | "bounded" | "aggressive";
+export type ServiceStatus = "healthy" | "stressed" | "overloaded" | "incident" | "offline";
 
 export interface ScenarioDefinition {
   id: ScenarioId;
@@ -103,6 +105,39 @@ export interface Metrics {
   operatingCost: number;
   revenue: number;
   architectureScore: number;
+  retryRecovery: number;
+  loadShedding: number;
+  elasticCapacity: number;
+  criticalPath: string[];
+  serviceSignals: ServiceSignal[];
+}
+
+export interface ServiceSignal {
+  buildingId: string;
+  kind: BuildingKind;
+  incoming: number;
+  served: number;
+  capacity: number;
+  utilization: number;
+  latency: number;
+  errorRate: number;
+  queueDepth: number;
+  reachable: boolean;
+  onCriticalPath: boolean;
+  status: ServiceStatus;
+}
+
+export interface OperationsControls {
+  retryPolicy: RetryPolicy;
+  circuitBreaker: boolean;
+  autoscaling: boolean;
+}
+
+export interface ReleaseState {
+  status: "idle" | "canary";
+  targetBuildingId: string | null;
+  progress: number;
+  revision: number;
 }
 
 export interface TelemetrySample {
@@ -130,6 +165,12 @@ export interface RunTelemetry {
   peakLatency: number;
   peakSaturation: number;
   minimumAvailability: number;
+  retryRecoveries: number;
+  requestsShed: number;
+  autoscaleTicks: number;
+  canariesStarted: number;
+  canariesCompleted: number;
+  canariesRolledBack: number;
   architectureHistory: TelemetrySample[];
 }
 
@@ -194,7 +235,7 @@ export interface GameSettings {
 }
 
 export interface GameState {
-  version: 3;
+  version: 4;
   scenario: ScenarioId;
   challengeSeed: number;
   seed: number;
@@ -218,5 +259,7 @@ export interface GameState {
   reportRecorded: boolean;
   metrics: Metrics;
   telemetry: RunTelemetry;
+  operations: OperationsControls;
+  release: ReleaseState;
   settings: GameSettings;
 }

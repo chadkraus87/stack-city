@@ -14,6 +14,14 @@ export const metadata: Metadata = {
   description:
     "Build a digital city, route live traffic, resolve incidents, and learn systems architecture by doing.",
   applicationName: "Stack City",
+  creator: "Chad Kraus",
+  publisher: "Chad Kraus",
+  category: "games",
+  alternates: { canonical: "/" },
+  robots: {
+    index: true,
+    follow: true,
+  },
   keywords: [
     "infrastructure game",
     "systems design",

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import {
   type CSSProperties,
   useCallback,
@@ -30,10 +31,12 @@ import {
   incidentRepairCost,
   nextId,
   parseChallengeCode,
+  rollbackCanaryDeployment,
   resolveIncident,
   restoreGameState,
   restoreRunHistory,
   simulateTick,
+  startCanaryDeployment,
 } from "./engine.ts";
 import type {
   Building,
@@ -43,11 +46,13 @@ import type {
   GameState,
   RunEndReason,
   RunSummary,
+  RetryPolicy,
   ScenarioId,
+  ServiceSignal,
 } from "./types.ts";
 
-const SAVE_KEY = "stack-city-save-v3";
-const LEGACY_SAVE_KEYS = ["stack-city-save-v2", "stack-city-save-v1"] as const;
+const SAVE_KEY = "stack-city-save-v4";
+const LEGACY_SAVE_KEYS = ["stack-city-save-v3", "stack-city-save-v2", "stack-city-save-v1"] as const;
 const HISTORY_KEY = "stack-city-run-history-v1";
 const MAX_SAVE_BYTES = 250_000;
 const MAX_HISTORY_BYTES = 100_000;
@@ -87,8 +92,8 @@ const TOUR_STEPS = [
   {
     eyebrow: "04 / Request routing",
     title: "Connect the stack",
-    body: "A building does nothing while isolated. Select it, choose Connect in the inspector, then choose its neighbor to create a live request path.",
-    hint: "A complete core route runs WEB → API → DATA. Links cost $250.",
+    body: "Links are directional. Select the upstream service, choose Connect, then choose the downstream service that should receive its requests.",
+    hint: "A complete core route runs DNS → WEB → API → DATA. Arrowed links cost $250.",
     signal: "ROUTE",
     position: "bottom",
   },
@@ -142,6 +147,120 @@ function connectionGeometry(from: Building, to: Building): CSSProperties {
     width: `${Math.hypot(dx, dy) * (100 / GRID_COLUMNS)}%`,
     transform: `rotate(${Math.atan2(dy, dx) * (180 / Math.PI)}deg)`,
   };
+}
+
+const SIGNAL_PRIORITY: Record<ServiceSignal["status"], number> = {
+  incident: 5,
+  overloaded: 4,
+  stressed: 3,
+  healthy: 2,
+  offline: 1,
+};
+
+function FlowObservatory({
+  signals,
+  onSelect,
+}: {
+  signals: ServiceSignal[];
+  onSelect: (buildingId: string) => void;
+}) {
+  const visibleSignals = [...signals]
+    .sort((left, right) =>
+      Number(right.onCriticalPath) - Number(left.onCriticalPath)
+        || SIGNAL_PRIORITY[right.status] - SIGNAL_PRIORITY[left.status]
+        || right.utilization - left.utilization,
+    )
+    .slice(0, 6);
+  return (
+    <section className="flow-observatory" aria-labelledby="flow-observatory-title">
+      <div className="panel-heading tight">
+        <div><span className="eyebrow">Distributed trace</span><h2 id="flow-observatory-title">Service flow</h2></div>
+        <span className="flow-direction">UPSTREAM → DOWNSTREAM</span>
+      </div>
+      <ol>
+        {visibleSignals.map((signal) => (
+          <li key={signal.buildingId}>
+            <button type="button" onClick={() => onSelect(signal.buildingId)}>
+              <span className={`signal-status ${signal.status}`} />
+              <span className="signal-service">
+                <strong>{BUILDINGS[signal.kind].name}</strong>
+                <small>{signal.onCriticalPath ? "CRITICAL PATH" : signal.reachable ? "CONNECTED BRANCH" : "NO INGRESS"}</small>
+              </span>
+              <span className="signal-throughput"><strong>{compact(signal.served)}</strong><small>/ {compact(signal.incoming)} RPS</small></span>
+              <span className="signal-utilization"><strong>{percent(signal.utilization, 0)}</strong><small>{signal.status}</small></span>
+              <span className="signal-meter" aria-hidden="true"><i className={signal.status} style={{ width: `${Math.min(100, signal.utilization * 100)}%` }} /></span>
+            </button>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+function ReliabilityConsole({
+  retryPolicy,
+  circuitBreaker,
+  autoscaling,
+  release,
+  canaryTargets,
+  canAffordCanary,
+  onRetryPolicy,
+  onToggleCircuitBreaker,
+  onToggleAutoscaling,
+  onStartCanary,
+  onRollback,
+}: {
+  retryPolicy: RetryPolicy;
+  circuitBreaker: boolean;
+  autoscaling: boolean;
+  release: GameState["release"];
+  canaryTargets: ServiceSignal[];
+  canAffordCanary: boolean;
+  onRetryPolicy: (policy: RetryPolicy) => void;
+  onToggleCircuitBreaker: () => void;
+  onToggleAutoscaling: () => void;
+  onStartCanary: (buildingId: string) => void;
+  onRollback: () => void;
+}) {
+  const target = canaryTargets.find((signal) => signal.buildingId === release.targetBuildingId);
+  return (
+    <section className="reliability-console" aria-labelledby="reliability-title">
+      <div className="panel-heading tight">
+        <div><span className="eyebrow">Traffic policy</span><h2 id="reliability-title">Reliability controls</h2></div>
+      </div>
+      <div className="policy-row">
+        <span><strong>Retries</strong><small>Recovery versus load amplification</small></span>
+        <div className="segmented-control" aria-label="Retry policy">
+          {(["off", "bounded", "aggressive"] as const).map((policy) => (
+            <button type="button" key={policy} aria-pressed={retryPolicy === policy} className={retryPolicy === policy ? "active" : ""} onClick={() => onRetryPolicy(policy)}>{policy}</button>
+          ))}
+        </div>
+      </div>
+      <button type="button" className={`policy-toggle ${circuitBreaker ? "active" : ""}`} aria-pressed={circuitBreaker} onClick={onToggleCircuitBreaker}>
+        <span><strong>Circuit breaker</strong><small>Shed overload before failures cascade</small></span><b>{circuitBreaker ? "ARMED" : "OFF"}</b>
+      </button>
+      <button type="button" className={`policy-toggle ${autoscaling ? "active" : ""}`} aria-pressed={autoscaling} onClick={onToggleAutoscaling}>
+        <span><strong>Compute autoscaler</strong><small>Rent burst capacity above 70% load</small></span><b>{autoscaling ? "READY" : "OFF"}</b>
+      </button>
+      {release.status === "canary" ? (
+        <div className="canary-progress">
+          <div><span>Canary · {target ? BUILDINGS[target.kind].shortName : "service"}</span><strong>{release.progress}%</strong></div>
+          <div className="mini-meter"><i style={{ width: `${release.progress}%` }} /></div>
+          <button type="button" onClick={onRollback}>Roll back safely</button>
+        </div>
+      ) : (
+        <div className="canary-launch">
+          <span><strong>Canary release</strong><small>Route 10% traffic to a new compute revision · $1,200</small></span>
+          <div>
+            {canaryTargets.slice(0, 3).map((signal) => (
+              <button type="button" key={signal.buildingId} aria-label={`Start canary on ${BUILDINGS[signal.kind].name}`} disabled={!canAffordCanary} onClick={() => onStartCanary(signal.buildingId)}>{BUILDINGS[signal.kind].code}</button>
+            ))}
+            {canaryTargets.length === 0 && <small>Connect a Web, API, or Worker service first.</small>}
+          </div>
+        </div>
+      )}
+    </section>
+  );
 }
 
 function withFreshMetrics(state: GameState): GameState {
@@ -313,6 +432,7 @@ export function StackCityGame() {
   );
   const selected = game.buildings.find((building) => building.id === selectedId) ?? null;
   const selectedDefinition = selected ? BUILDINGS[selected.kind] : null;
+  const selectedSignal = game.metrics.serviceSignals.find((signal) => signal.buildingId === selectedId) ?? null;
   const currentObjective = OBJECTIVES[game.objectiveIndex];
   const nextRank = RANKS[game.rank];
   const rankFloor = RANKS[game.rank - 1]?.xp ?? 0;
@@ -328,6 +448,13 @@ export function StackCityGame() {
   const scenarioDefinition = SCENARIOS[game.scenario];
   const challengeCode = createChallengeCode(game.scenario, game.challengeSeed);
   const operationsReport = useMemo(() => createOperationsReport(game), [game]);
+  const canaryTargets = useMemo(
+    () => game.metrics.serviceSignals.filter((signal) =>
+      signal.reachable
+        && (signal.kind === "frontend" || signal.kind === "api" || signal.kind === "worker"),
+    ),
+    [game.metrics.serviceSignals],
+  );
   const reportSamples = useMemo(() => {
     if (game.telemetry.architectureHistory.length > 0) {
       return game.telemetry.architectureHistory.slice(-18);
@@ -420,7 +547,7 @@ export function StackCityGame() {
             id: `connect-${fromId}-${toId}-${current.tick}`,
             tick: current.tick,
             tone: "good" as const,
-            message: `${BUILDINGS[from.kind].shortName} linked to ${BUILDINGS[to.kind].shortName}.`,
+            message: `${BUILDINGS[from.kind].shortName} now routes to ${BUILDINGS[to.kind].shortName}.`,
           },
           ...current.events,
         ].slice(0, 18),
@@ -489,6 +616,8 @@ export function StackCityGame() {
       const removedIncidents = current.incidents.filter(
         (incident) => incident.buildingId === selected.id,
       );
+      const removesCanary = current.release.status === "canary"
+        && current.release.targetBuildingId === selected.id;
       return {
         ...current,
         money: current.money + refund,
@@ -500,12 +629,16 @@ export function StackCityGame() {
         telemetry: {
           ...current.telemetry,
           incidentsResolved: current.telemetry.incidentsResolved + removedIncidents.length,
+          canariesRolledBack: current.telemetry.canariesRolledBack + Number(removesCanary),
           totalResolutionTicks: current.telemetry.totalResolutionTicks
             + removedIncidents.reduce(
               (total, incident) => total + Math.max(0, current.tick - incident.startedAt),
               0,
             ),
         },
+        release: removesCanary
+          ? { ...current.release, status: "idle" as const, targetBuildingId: null, progress: 0 }
+          : current.release,
         events: [
           {
             id: `sell-${selected.id}-${current.tick}`,
@@ -520,6 +653,40 @@ export function StackCityGame() {
     setSelectedId(null);
     setConnectFrom(null);
     playTone(260);
+  };
+
+  const setRetryPolicy = (retryPolicy: RetryPolicy) => {
+    commit((current) => ({
+      ...current,
+      operations: { ...current.operations, retryPolicy },
+    }));
+    playTone(retryPolicy === "off" ? 260 : retryPolicy === "bounded" ? 520 : 390);
+  };
+
+  const toggleCircuitBreaker = () => {
+    commit((current) => ({
+      ...current,
+      operations: { ...current.operations, circuitBreaker: !current.operations.circuitBreaker },
+    }));
+    playTone(610, 0.08);
+  };
+
+  const toggleAutoscaling = () => {
+    commit((current) => ({
+      ...current,
+      operations: { ...current.operations, autoscaling: !current.operations.autoscaling },
+    }));
+    playTone(680, 0.08);
+  };
+
+  const launchCanary = (buildingId: string) => {
+    commit((current) => startCanaryDeployment(current, buildingId));
+    playTone(740, 0.1);
+  };
+
+  const rollbackCanary = () => {
+    commit(rollbackCanaryDeployment);
+    playTone(310, 0.08);
   };
 
   const chooseScenario = (scenario: ScenarioId) => {
@@ -813,7 +980,7 @@ export function StackCityGame() {
           )}
           {connectFrom && (
             <div className="mode-banner connect-mode" role="status">
-              <span className="mode-dot" /> Choose another service to connect
+              <span className="mode-dot" /> Choose the downstream service · traffic flows source → target
               <span>{money(CONNECTION_COST)}</span>
             </div>
           )}
@@ -832,7 +999,7 @@ export function StackCityGame() {
                   const isFlowing = connected.has(from.id) && connected.has(to.id) && from.health > 0 && to.health > 0;
                   return (
                     <div className={`connection-line ${isFlowing ? "flowing" : ""}`} key={connection.id} style={connectionGeometry(from, to)}>
-                      <span className="flow-pulse one" /><span className="flow-pulse two" />
+                      <span className="flow-pulse one" /><span className="flow-pulse two" /><i className="flow-arrow" />
                     </div>
                   );
                 })}
@@ -851,7 +1018,7 @@ export function StackCityGame() {
                     key={`${x}-${y}`}
                     className={`city-cell ${building ? "occupied" : "empty"} ${buildMode && !building ? "buildable" : ""} ${isSelected ? "selected" : ""} ${isSource ? "connect-source" : ""}`}
                     onClick={() => handleCell(x, y, building)}
-                    aria-label={building ? `${definition?.name}, level ${building.level}, ${Math.round(building.health)} percent health${isConnected ? ", connected" : ", isolated"}` : buildMode ? `Place ${BUILDINGS[buildMode].name} at column ${x + 1}, row ${y + 1}` : `Empty tile at column ${x + 1}, row ${y + 1}`}
+                    aria-label={building ? `${definition?.name}, level ${building.level}, ${Math.round(building.health)} percent health${isConnected ? ", reachable from ingress" : ", no directed ingress"}` : buildMode ? `Place ${BUILDINGS[buildMode].name} at column ${x + 1}, row ${y + 1}` : `Empty tile at column ${x + 1}, row ${y + 1}`}
                     style={definition ? { "--building-color": definition.color } as CSSProperties : undefined}
                   >
                     <span className="tile-surface" />
@@ -871,7 +1038,7 @@ export function StackCityGame() {
               })}
             </div>
             <div className="map-legend" aria-hidden="true">
-              <span><i className="legend-flow" /> live requests</span>
+              <span><i className="legend-flow" /> directed requests</span>
               <span><i className="legend-tile" /> buildable zone</span>
             </div>
           </div>
@@ -881,9 +1048,10 @@ export function StackCityGame() {
               <span>Capacity</span>
               <strong>{Math.round(game.metrics.capacity)} RPS</strong>
               <div className="mini-meter"><i className={game.metrics.saturation > 1 ? "danger" : game.metrics.saturation > 0.82 ? "warn" : ""} style={{ width: `${Math.min(100, game.metrics.saturation * 100)}%` }} /></div>
+              {game.metrics.elasticCapacity > 0 && <small>+{Math.round(game.metrics.elasticCapacity)} elastic</small>}
             </div>
             <div><span>Saturation</span><strong>{percent(game.metrics.saturation, 0)}</strong><small>{game.metrics.saturation > 1 ? "OVERLOADED" : game.metrics.saturation > 0.82 ? "HEADROOM LOW" : "HEALTHY"}</small></div>
-            <div><span>Cache hit</span><strong>{percent(game.metrics.cacheHitRate, 0)}</strong><small>{game.metrics.cacheHitRate > 0 ? "DB OFFLOAD" : "NO CACHE"}</small></div>
+            <div><span>Recovery</span><strong>{compact(game.metrics.retryRecovery)} RPS</strong><small>{game.metrics.loadShedding > 0 ? `${compact(game.metrics.loadShedding)} SHED` : game.operations.retryPolicy === "off" ? "RETRIES OFF" : "RETRIES ACTIVE"}</small></div>
             <div><span>Net / tick</span><strong className={game.metrics.revenue - game.metrics.operatingCost / 12 < 0 ? "metric-bad" : "metric-good"}>{money(game.metrics.revenue - game.metrics.operatingCost / 12)}</strong><small>{money(game.metrics.operatingCost)} / MIN OPS</small></div>
             <div><span>User satisfaction</span><strong>{Math.round(game.satisfaction)}%</strong><small>{game.satisfaction >= 88 ? "DELIGHTED" : game.satisfaction >= 65 ? "STABLE" : "AT RISK"}</small></div>
           </div>
@@ -921,7 +1089,7 @@ export function StackCityGame() {
                 ) : !connected.has(game.buildings.find((building) => building.kind === "cache")?.id ?? "") ? (
                   <>
                     <h3>Connect the cache</h3>
-                    <p>Select the Cache Depot, choose Connect, then choose the API or Database.</p>
+                    <p>Select the upstream API, choose Connect, then choose the Cache Depot.</p>
                   </>
                 ) : (
                   <>
@@ -951,6 +1119,22 @@ export function StackCityGame() {
             </section>
           )}
 
+          <ReliabilityConsole
+            retryPolicy={game.operations.retryPolicy}
+            circuitBreaker={game.operations.circuitBreaker}
+            autoscaling={game.operations.autoscaling}
+            release={game.release}
+            canaryTargets={canaryTargets}
+            canAffordCanary={game.money >= 1_200}
+            onRetryPolicy={setRetryPolicy}
+            onToggleCircuitBreaker={toggleCircuitBreaker}
+            onToggleAutoscaling={toggleAutoscaling}
+            onStartCanary={launchCanary}
+            onRollback={rollbackCanary}
+          />
+
+          <FlowObservatory signals={game.metrics.serviceSignals} onSelect={setSelectedId} />
+
           <section className="inspector-card">
             <div className="panel-heading tight">
               <div><span className="eyebrow">Inspector</span><h2>{selectedDefinition?.name ?? "Select a service"}</h2></div>
@@ -963,7 +1147,9 @@ export function StackCityGame() {
                   <div><span>Level</span><strong>{selected.level} / 4</strong></div>
                   <div><span>Health</span><strong>{Math.round(selected.health)}%</strong></div>
                   <div><span>Capacity</span><strong>{Math.round(buildingCapacity(selected))}</strong></div>
-                  <div><span>Network</span><strong className={connected.has(selected.id) ? "metric-good" : "metric-bad"}>{connected.has(selected.id) ? "Linked" : "Isolated"}</strong></div>
+                  <div><span>Network</span><strong className={connected.has(selected.id) ? "metric-good" : "metric-bad"}>{connected.has(selected.id) ? "Reachable" : "No ingress"}</strong></div>
+                  <div><span>Inbound</span><strong>{selectedSignal ? `${compact(selectedSignal.incoming)} RPS` : "—"}</strong></div>
+                  <div><span>Utilization</span><strong className={selectedSignal && selectedSignal.utilization > 0.82 ? "metric-bad" : ""}>{selectedSignal ? percent(selectedSignal.utilization, 0) : "—"}</strong></div>
                 </div>
                 <div className="inspector-actions">
                   <button type="button" className={connectFrom === selected.id ? "active" : ""} onClick={() => { setConnectFrom((current) => current === selected.id ? null : selected.id); setBuildMode(null); }}>
@@ -1010,6 +1196,7 @@ export function StackCityGame() {
         <span>SLO: <b className={game.metrics.availability >= 0.99 ? "metric-good" : "metric-bad"}>{game.metrics.availability >= 0.99 ? "PASSING" : "AT RISK"}</b></span>
         <span>{game.buildings.length} services · {game.connections.length} links</span>
         <span>{lastSavedTick === null ? "New city" : `Last save ${elapsed(lastSavedTick)}`}</span>
+        <Link href="/legal">Privacy · Terms · Accessibility</Link>
       </footer>
 
       {showSettings && (
@@ -1022,6 +1209,7 @@ export function StackCityGame() {
           <div className="shortcut-list"><span><kbd>Space</kbd> pause</span><span><kbd>Esc</kbd> cancel tool</span></div>
           <button type="button" className="settings-tour-button" onClick={replayTour}>Replay guided walkthrough</button>
           <button type="button" className="settings-tour-button" onClick={openOperationsReport}>Open operations review</button>
+          <Link className="settings-legal-link" href="/legal">Legal &amp; privacy center</Link>
           <button type="button" className="danger-outline-button" onClick={() => setShowReset(true)}>Start a new city</button>
         </div>
       )}
@@ -1109,6 +1297,7 @@ export function StackCityGame() {
                 </>
               )}
               <button className="intro-guide-button" type="button" onClick={() => setShowGuide(true)}>Read the architect’s field guide</button>
+              <Link className="intro-legal-link" href="/legal">Privacy · Terms · Accessibility</Link>
             </div>
           </section>
         </div>
@@ -1166,6 +1355,8 @@ export function StackCityGame() {
               <article><span>04 / Async</span><h3>Buffer the burst</h3><p>Queues preserve background work during spikes. Workers drain that work without keeping users waiting.</p></article>
               <article><span>05 / Observability</span><h3>See before you repair</h3><p>Monitoring reduces incident impact. The Watchtower represents metrics, logs, traces, and actionable alerts.</p></article>
               <article><span>06 / SLOs</span><h3>Define good service</h3><p>Stack City’s SLO targets 99% availability, under 250 ms p95 latency, and less than 1% errors.</p></article>
+              <article><span>07 / Traffic safety</span><h3>Control failure amplification</h3><p>Bounded retries can recover transient failures. Circuit breakers protect unhealthy dependencies by shedding excess work before it cascades.</p></article>
+              <article><span>08 / Delivery</span><h3>Release through a canary</h3><p>Send a small traffic slice to a new compute revision, watch its service trace, then let it promote or roll it back safely.</p></article>
             </div>
             <button className="primary-button" type="button" onClick={() => setShowGuide(false)}>Return to the city</button>
           </section>

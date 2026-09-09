@@ -15,6 +15,11 @@ architecture explanations, and portfolio-friendly polish.
 4. Validate simulation rules, server rendering, accessibility, and production
    output.
 5. Browser-playtest the complete loop and publish the verified build.
+6. Model directed service flow, per-service telemetry, reliability controls,
+   and safe canary releases.
+7. Publish transparent privacy, terms, and accessibility disclosures,
+   proprietary source-available licensing, third-party notices, and a
+   monetization gate.
 
 ## Definition of done for this release
 
@@ -28,4 +33,8 @@ architecture explanations, and portfolio-friendly polish.
 - The game saves locally with a versioned, validated payload.
 - Keyboard, touch, reduced-motion, and narrow-screen usage are supported.
 - Automated tests and a production build pass.
-
+- Reliability controls have measurable tradeoffs and deterministic tests.
+- Every service exposes reachability, utilization, latency, error, and path status.
+- Releases can canary, promote, manually roll back, and auto-rollback on failure.
+- Legal, licensing, privacy, accessibility, security-reporting, robots, sitemap,
+  and public-launch documentation ship with the same version as the game.
