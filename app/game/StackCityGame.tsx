@@ -23,9 +23,16 @@ import {
   buildingCapacity,
   calculateMetrics,
   connectedBuildingIds,
+  createChallengeCode,
   createInitialState,
+  createOperationsReport,
+  createRunSummary,
+  incidentRepairCost,
   nextId,
+  parseChallengeCode,
+  resolveIncident,
   restoreGameState,
+  restoreRunHistory,
   simulateTick,
 } from "./engine.ts";
 import type {
@@ -34,12 +41,17 @@ import type {
   BuildingKind,
   GameSpeed,
   GameState,
+  RunEndReason,
+  RunSummary,
   ScenarioId,
 } from "./types.ts";
 
-const SAVE_KEY = "stack-city-save-v2";
-const LEGACY_SAVE_KEY = "stack-city-save-v1";
+const SAVE_KEY = "stack-city-save-v3";
+const LEGACY_SAVE_KEYS = ["stack-city-save-v2", "stack-city-save-v1"] as const;
+const HISTORY_KEY = "stack-city-run-history-v1";
 const MAX_SAVE_BYTES = 250_000;
+const MAX_HISTORY_BYTES = 100_000;
+const DEFAULT_CHALLENGE_SEED = 82491;
 const CONNECTION_COST = 250;
 const CATEGORIES: Array<BuildingCategory | "All"> = ["All", "Edge", "Compute", "Data", "Platform"];
 const GRID_CELLS = Array.from({ length: GRID_COLUMNS * GRID_ROWS }, (_, index) => ({
@@ -147,11 +159,21 @@ export function StackCityGame() {
   const [showGuide, setShowGuide] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showReset, setShowReset] = useState(false);
+  const [showClearHistory, setShowClearHistory] = useState(false);
+  const [showReport, setShowReport] = useState(false);
   const [tourStep, setTourStep] = useState<number | null>(null);
   const [lastSavedTick, setLastSavedTick] = useState<number | null>(null);
   const [selectedScenario, setSelectedScenario] = useState<ScenarioId>("growth");
+  const [selectedSeed, setSelectedSeed] = useState(DEFAULT_CHALLENGE_SEED);
+  const [challengeInput, setChallengeInput] = useState(
+    () => createChallengeCode("growth", DEFAULT_CHALLENGE_SEED),
+  );
+  const [challengeError, setChallengeError] = useState("");
+  const [copyStatus, setCopyStatus] = useState("");
+  const [runHistory, setRunHistory] = useState<RunSummary[]>([]);
   const audioContextRef = useRef<AudioContext | null>(null);
   const resumeAfterTourRef = useRef(true);
+  const resumeAfterReportRef = useRef(false);
 
   const playTone = useCallback((frequency: number, duration = 0.055) => {
     if (!game.settings.sound || typeof window === "undefined") return;
@@ -178,7 +200,7 @@ export function StackCityGame() {
     const timer = window.setTimeout(() => {
       try {
         const raw = window.localStorage.getItem(SAVE_KEY)
-          ?? window.localStorage.getItem(LEGACY_SAVE_KEY);
+          ?? LEGACY_SAVE_KEYS.map((key) => window.localStorage.getItem(key)).find(Boolean);
         if (raw) {
           if (raw.length > MAX_SAVE_BYTES) throw new Error("Saved game exceeds the safety limit.");
           const restoredState = restoreGameState(JSON.parse(raw));
@@ -186,16 +208,29 @@ export function StackCityGame() {
             const restored = withFreshMetrics({ ...restoredState, paused: true });
             setGame(restored);
             setSelectedScenario(restored.scenario);
+            setSelectedSeed(restored.challengeSeed);
+            setChallengeInput(createChallengeCode(restored.scenario, restored.challengeSeed));
             setLastSavedTick(restored.tick);
-            window.localStorage.removeItem(LEGACY_SAVE_KEY);
+            for (const key of LEGACY_SAVE_KEYS) window.localStorage.removeItem(key);
           } else {
             window.localStorage.removeItem(SAVE_KEY);
-            window.localStorage.removeItem(LEGACY_SAVE_KEY);
+            for (const key of LEGACY_SAVE_KEYS) window.localStorage.removeItem(key);
           }
         }
       } catch {
         window.localStorage.removeItem(SAVE_KEY);
-        window.localStorage.removeItem(LEGACY_SAVE_KEY);
+        for (const key of LEGACY_SAVE_KEYS) window.localStorage.removeItem(key);
+      }
+      try {
+        const rawHistory = window.localStorage.getItem(HISTORY_KEY);
+        if (rawHistory) {
+          if (rawHistory.length > MAX_HISTORY_BYTES) throw new Error("Run history exceeds the safety limit.");
+          const restoredHistory = restoreRunHistory(JSON.parse(rawHistory));
+          if (restoredHistory.length > 0) setRunHistory(restoredHistory);
+          else window.localStorage.removeItem(HISTORY_KEY);
+        }
+      } catch {
+        window.localStorage.removeItem(HISTORY_KEY);
       } finally {
         setHydrated(true);
       }
@@ -208,7 +243,7 @@ export function StackCityGame() {
     const timer = window.setTimeout(() => {
       try {
         window.localStorage.setItem(SAVE_KEY, JSON.stringify(game));
-        window.localStorage.removeItem(LEGACY_SAVE_KEY);
+        for (const key of LEGACY_SAVE_KEYS) window.localStorage.removeItem(key);
         setLastSavedTick(game.tick);
       } catch {
         // Storage can be unavailable in private or restricted browsing modes.
@@ -216,6 +251,18 @@ export function StackCityGame() {
     }, 350);
     return () => window.clearTimeout(timer);
   }, [game, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    const timer = window.setTimeout(() => {
+      try {
+        window.localStorage.setItem(HISTORY_KEY, JSON.stringify({ version: 1, runs: runHistory }));
+      } catch {
+        // History is optional when browser storage is unavailable.
+      }
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [hydrated, runHistory]);
 
   useEffect(() => {
     if (game.paused || game.gameOver || showIntro || tourStep !== null) return;
@@ -239,6 +286,10 @@ export function StackCityGame() {
         setConnectFrom(null);
         setShowGuide(false);
         setShowSettings(false);
+        if (showReport && !game.gameOver) {
+          setShowReport(false);
+          setGame((current) => ({ ...current, paused: !resumeAfterReportRef.current }));
+        }
         if (tourStep !== null) {
           setTourStep(null);
           setGame((current) => ({ ...current, paused: !resumeAfterTourRef.current }));
@@ -254,7 +305,7 @@ export function StackCityGame() {
     };
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [showIntro, tourStep]);
+  }, [game.gameOver, showIntro, showReport, tourStep]);
 
   const connected = useMemo(
     () => connectedBuildingIds(game.buildings, game.connections),
@@ -275,6 +326,37 @@ export function StackCityGame() {
   const unlockedAchievements = game.achievements.filter((achievement) => achievement.unlockedAt !== undefined);
   const saveStatus = lastSavedTick === game.tick ? "saved" : "saving";
   const scenarioDefinition = SCENARIOS[game.scenario];
+  const challengeCode = createChallengeCode(game.scenario, game.challengeSeed);
+  const operationsReport = useMemo(() => createOperationsReport(game), [game]);
+  const reportSamples = useMemo(() => {
+    if (game.telemetry.architectureHistory.length > 0) {
+      return game.telemetry.architectureHistory.slice(-18);
+    }
+    return [{
+      tick: game.tick,
+      architectureScore: game.metrics.architectureScore,
+      availability: game.metrics.availability,
+      latency: game.metrics.latency,
+      errorRate: game.metrics.errorRate,
+    }];
+  }, [game.metrics, game.telemetry.architectureHistory, game.tick]);
+
+  const archiveRun = useCallback((state: GameState, reason: Exclude<RunEndReason, "live">) => {
+    const summary = createRunSummary(state, reason, Date.now());
+    setRunHistory((current) => [summary, ...current].slice(0, 12));
+  }, []);
+
+  useEffect(() => {
+    const campaignComplete = game.objectiveIndex >= OBJECTIVES.length;
+    if (!hydrated || game.reportRecorded || (!game.gameOver && !campaignComplete)) return;
+    const timer = window.setTimeout(() => {
+      resumeAfterReportRef.current = !game.paused && !game.gameOver;
+      archiveRun(game, game.gameOver ? "failure" : "campaign");
+      setShowReport(true);
+      setGame((current) => ({ ...current, paused: true, reportRecorded: true }));
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [archiveRun, game, hydrated]);
 
   const commit = useCallback((transition: (current: GameState) => GameState) => {
     setGame((current) => withFreshMetrics(transition(current)));
@@ -396,68 +478,116 @@ export function StackCityGame() {
   };
 
   const repairIncident = (incidentId: string) => {
-    commit((current) => {
-      const incident = current.incidents.find((item) => item.id === incidentId);
-      if (!incident) return current;
-      const cost = incident.severity === "critical" ? 900 : 450;
-      if (current.money < cost) return current;
-      let next: GameState = {
-        ...current,
-        money: current.money - cost,
-        incidents: current.incidents.filter((item) => item.id !== incidentId),
-        buildings: current.buildings.map((building) =>
-          building.id === incident.buildingId
-            ? { ...building, health: Math.min(100, building.health + 26) }
-            : building,
-        ),
-        events: [
-          {
-            id: `resolved-${incident.id}`,
-            tick: current.tick,
-            tone: "good" as const,
-            message: `${incident.title} resolved by the on-call team.`,
-          },
-          ...current.events,
-        ].slice(0, 18),
-      };
-      next = addManualAchievement(next, "incident");
-      return next;
-    });
+    commit((current) => resolveIncident(current, incidentId));
     playTone(620, 0.08);
   };
 
   const sellSelected = () => {
     if (!selected) return;
     const refund = Math.round(BUILDINGS[selected.kind].cost * 0.55 * (1 + (selected.level - 1) * 0.42));
-    commit((current) => ({
-      ...current,
-      money: current.money + refund,
-      buildings: current.buildings.filter((building) => building.id !== selected.id),
-      connections: current.connections.filter(
-        (connection) => connection.from !== selected.id && connection.to !== selected.id,
-      ),
-      incidents: current.incidents.filter((incident) => incident.buildingId !== selected.id),
-      events: [
-        {
-          id: `sell-${selected.id}-${current.tick}`,
-          tick: current.tick,
-          tone: "info" as const,
-          message: `${BUILDINGS[selected.kind].name} decommissioned. ${money(refund)} recovered.`,
+    commit((current) => {
+      const removedIncidents = current.incidents.filter(
+        (incident) => incident.buildingId === selected.id,
+      );
+      return {
+        ...current,
+        money: current.money + refund,
+        buildings: current.buildings.filter((building) => building.id !== selected.id),
+        connections: current.connections.filter(
+          (connection) => connection.from !== selected.id && connection.to !== selected.id,
+        ),
+        incidents: current.incidents.filter((incident) => incident.buildingId !== selected.id),
+        telemetry: {
+          ...current.telemetry,
+          incidentsResolved: current.telemetry.incidentsResolved + removedIncidents.length,
+          totalResolutionTicks: current.telemetry.totalResolutionTicks
+            + removedIncidents.reduce(
+              (total, incident) => total + Math.max(0, current.tick - incident.startedAt),
+              0,
+            ),
         },
-        ...current.events,
-      ].slice(0, 18),
-    }));
+        events: [
+          {
+            id: `sell-${selected.id}-${current.tick}`,
+            tick: current.tick,
+            tone: "info" as const,
+            message: `${BUILDINGS[selected.kind].name} decommissioned. ${money(refund)} recovered.`,
+          },
+          ...current.events,
+        ].slice(0, 18),
+      };
+    });
     setSelectedId(null);
     setConnectFrom(null);
     playTone(260);
   };
 
+  const chooseScenario = (scenario: ScenarioId) => {
+    setSelectedScenario(scenario);
+    setChallengeInput(createChallengeCode(scenario, selectedSeed));
+    setChallengeError("");
+  };
+
+  const generateChallenge = () => {
+    const values = new Uint32Array(1);
+    window.crypto.getRandomValues(values);
+    const seed = values[0];
+    setSelectedSeed(seed);
+    setChallengeInput(createChallengeCode(selectedScenario, seed));
+    setChallengeError("");
+    setCopyStatus("");
+  };
+
+  const applyChallenge = () => {
+    const parsed = parseChallengeCode(challengeInput);
+    if (!parsed) {
+      setChallengeError("That challenge code is invalid or incomplete.");
+      return;
+    }
+    setSelectedScenario(parsed.scenario);
+    setSelectedSeed(parsed.seed);
+    setChallengeInput(createChallengeCode(parsed.scenario, parsed.seed));
+    setChallengeError("");
+    playTone(560, 0.08);
+  };
+
+  const copyChallenge = async (code: string) => {
+    try {
+      await window.navigator.clipboard.writeText(code);
+      setCopyStatus("Challenge code copied");
+      playTone(700, 0.06);
+    } catch {
+      setCopyStatus("Copy unavailable — select the code instead");
+    }
+  };
+
+  const openOperationsReport = () => {
+    resumeAfterReportRef.current = !game.paused;
+    setGame((current) => ({ ...current, paused: true }));
+    setShowSettings(false);
+    setShowReport(true);
+  };
+
+  const closeOperationsReport = () => {
+    setShowReport(false);
+    if (!game.gameOver) {
+      setGame((current) => ({ ...current, paused: !resumeAfterReportRef.current }));
+    }
+  };
+
+  const clearRunHistory = () => {
+    window.localStorage.removeItem(HISTORY_KEY);
+    setRunHistory([]);
+    setShowClearHistory(false);
+  };
+
   const startGuidedRun = () => {
-    const fresh = createInitialState(selectedScenario);
+    const fresh = createInitialState(selectedScenario, selectedSeed);
     resumeAfterTourRef.current = true;
     setShowIntro(false);
     setShowGuide(false);
     setShowSettings(false);
+    setShowReport(false);
     setTourStep(0);
     setGame({ ...fresh, paused: true, tutorialComplete: false });
     setSelectedId("web-1");
@@ -471,8 +601,9 @@ export function StackCityGame() {
   };
 
   const startUnguidedRun = () => {
-    const fresh = createInitialState(selectedScenario);
+    const fresh = createInitialState(selectedScenario, selectedSeed);
     setShowIntro(false);
+    setShowReport(false);
     setGame({ ...fresh, paused: false, tutorialComplete: true });
     setSelectedId("web-1");
     playTone(540, 0.08);
@@ -498,16 +629,22 @@ export function StackCityGame() {
   };
 
   const resetGame = () => {
-    const fresh = createInitialState();
+    if (game.tick > 0 && !game.reportRecorded) archiveRun(game, "manual");
+    const fresh = createInitialState("growth", DEFAULT_CHALLENGE_SEED);
     window.localStorage.removeItem(SAVE_KEY);
-    window.localStorage.removeItem(LEGACY_SAVE_KEY);
+    for (const key of LEGACY_SAVE_KEYS) window.localStorage.removeItem(key);
     setGame(fresh);
     setSelectedScenario("growth");
+    setSelectedSeed(DEFAULT_CHALLENGE_SEED);
+    setChallengeInput(createChallengeCode("growth", DEFAULT_CHALLENGE_SEED));
+    setChallengeError("");
+    setCopyStatus("");
     setSelectedId("web-1");
     setBuildMode(null);
     setConnectFrom(null);
     setShowReset(false);
     setShowSettings(false);
+    setShowReport(false);
     setShowIntro(true);
     setTourStep(null);
     setLastSavedTick(null);
@@ -657,6 +794,9 @@ export function StackCityGame() {
               <span>Wave <strong>{game.wave}</strong></span>
               <span>Uptime <strong>{elapsed(game.tick)}</strong></span>
             </div>
+            <button className="run-review-button" type="button" onClick={openOperationsReport}>
+              <span>AAR</span><strong>Run review</strong>
+            </button>
             <div className="speed-control" aria-label="Simulation speed">
               <button type="button" className={game.paused ? "active" : ""} onClick={() => updateSpeed(0)} aria-label="Pause simulation">Ⅱ</button>
               {([1, 2, 4] as const).map((speed) => (
@@ -799,7 +939,7 @@ export function StackCityGame() {
               <div className="panel-heading tight"><div><span className="eyebrow alert">On call</span><h2>{game.incidents.length} active incident{game.incidents.length > 1 ? "s" : ""}</h2></div></div>
               {game.incidents.map((incident) => {
                 const building = game.buildings.find((item) => item.id === incident.buildingId);
-                const repairCost = incident.severity === "critical" ? 900 : 450;
+                const repairCost = incidentRepairCost(incident);
                 return (
                   <article className={`incident-card ${incident.severity}`} key={incident.id}>
                     <div className="incident-title"><span>!</span><div><strong>{incident.title}</strong><small>{building ? BUILDINGS[building.kind].name : "Unknown service"} · {Math.ceil(incident.remaining / 2)}s</small></div></div>
@@ -881,6 +1021,7 @@ export function StackCityGame() {
           <div className="setting-row"><span><strong id="setting-contrast-label">High contrast</strong><small>Strengthens borders and labels</small></span><input id="setting-contrast" aria-labelledby="setting-contrast-label" type="checkbox" checked={game.settings.highContrast} onChange={(event) => setGame((current) => ({ ...current, settings: { ...current.settings, highContrast: event.target.checked } }))} /></div>
           <div className="shortcut-list"><span><kbd>Space</kbd> pause</span><span><kbd>Esc</kbd> cancel tool</span></div>
           <button type="button" className="settings-tour-button" onClick={replayTour}>Replay guided walkthrough</button>
+          <button type="button" className="settings-tour-button" onClick={openOperationsReport}>Open operations review</button>
           <button type="button" className="danger-outline-button" onClick={() => setShowReset(true)}>Start a new city</button>
         </div>
       )}
@@ -926,7 +1067,7 @@ export function StackCityGame() {
                         role="radio"
                         aria-checked={selectedScenario === scenario.id}
                         key={scenario.id}
-                        onClick={() => setSelectedScenario(scenario.id)}
+                        onClick={() => chooseScenario(scenario.id)}
                       >
                         <span><strong>{scenario.name}</strong></span>
                         <b>{scenario.difficulty}</b>
@@ -937,6 +1078,30 @@ export function StackCityGame() {
                     <span>{SCENARIOS[selectedScenario].description}</span>
                     <small>{money(SCENARIOS[selectedScenario].startingMoney)} starting budget</small>
                   </div>
+                  <form className="challenge-builder" onSubmit={(event) => { event.preventDefault(); applyChallenge(); }}>
+                    <div>
+                      <label htmlFor="challenge-code">Deterministic challenge code</label>
+                      <span>Same scenario and seed, same production pressure. Stored and shared without player data.</span>
+                    </div>
+                    <div className="challenge-input-row">
+                      <input
+                        id="challenge-code"
+                        value={challengeInput}
+                        onChange={(event) => { setChallengeInput(event.target.value.toUpperCase()); setChallengeError(""); }}
+                        aria-invalid={challengeError ? "true" : "false"}
+                        aria-describedby="challenge-help"
+                        autoComplete="off"
+                        maxLength={32}
+                        spellCheck={false}
+                      />
+                      <button type="submit">Load code</button>
+                      <button type="button" onClick={generateChallenge}>New seed</button>
+                    </div>
+                    <div className="challenge-helper" id="challenge-help" aria-live="polite">
+                      <span className={challengeError ? "challenge-error" : ""}>{challengeError || createChallengeCode(selectedScenario, selectedSeed)}</span>
+                      <button type="button" onClick={() => void copyChallenge(createChallengeCode(selectedScenario, selectedSeed))}>Copy</button>
+                    </div>
+                  </form>
                   <div className="intro-actions">
                     <button className="primary-button start-button" type="button" onClick={startGuidedRun}>Start guided run<span>→</span></button>
                     <button className="secondary-button" type="button" onClick={startUnguidedRun}>Play without hints</button>
@@ -1007,6 +1172,109 @@ export function StackCityGame() {
         </div>
       )}
 
+      {showReport && (
+        <div className="modal-backdrop report-backdrop">
+          <section className="operations-report" role="dialog" aria-modal="true" aria-labelledby="report-title">
+            <header className="report-header">
+              <div>
+                <span className="eyebrow">After-action operations review</span>
+                <h2 id="report-title">{game.gameOver ? "Outage postmortem" : game.objectiveIndex >= OBJECTIVES.length ? "Campaign debrief" : "Live run analysis"}</h2>
+                <p>{scenarioDefinition.name} · wave {game.wave} · {elapsed(game.tick)}</p>
+              </div>
+              {!game.gameOver && <button className="close-button" type="button" onClick={closeOperationsReport} aria-label="Close operations review">×</button>}
+            </header>
+
+            <div className="report-hero">
+              <div className={`report-grade grade-${operationsReport.grade.toLowerCase()}`}>
+                <span>Operator grade</span>
+                <strong>{operationsReport.grade}</strong>
+                <small>{operationsReport.score} / 100</small>
+              </div>
+              <div className="report-brief">
+                <span className="eyebrow">Primary constraint</span>
+                <h3>{operationsReport.bottleneck.label}</h3>
+                <p>{operationsReport.bottleneck.explanation}</p>
+                <div><span>{Math.round(operationsReport.bottleneck.capacity)} RPS capacity</span><span>{percent(operationsReport.bottleneck.utilization, 0)} utilized</span></div>
+              </div>
+              <div className="report-code">
+                <span className="eyebrow">Replay this pressure profile</span>
+                <code>{challengeCode}</code>
+                <button type="button" onClick={() => void copyChallenge(challengeCode)}>Copy challenge code</button>
+                <small aria-live="polite">{copyStatus || "Code contains only scenario and seed."}</small>
+              </div>
+            </div>
+
+            <div className="report-kpis" aria-label="Run performance summary">
+              <article><span>Avg availability</span><strong className={operationsReport.averageAvailability >= 0.99 ? "metric-good" : "metric-bad"}>{percent(operationsReport.averageAvailability, 2)}</strong><small>Target 99.00%</small></article>
+              <article><span>SLO compliance</span><strong>{percent(operationsReport.sloCompliance, 0)}</strong><small>Availability · latency · errors</small></article>
+              <article><span>Error-budget burn</span><strong className={operationsReport.errorBudgetBurn <= 1 ? "metric-good" : "metric-bad"}>{operationsReport.errorBudgetBurn.toFixed(1)}×</strong><small>{operationsReport.errorBudgetBurn <= 1 ? "Within budget" : "Budget overspent"}</small></article>
+              <article><span>Incidents</span><strong>{game.telemetry.incidentsStarted}</strong><small>{game.telemetry.incidentsAutoRecovered} auto-recovered</small></article>
+              <article><span>Mean recovery</span><strong>{operationsReport.meanTimeToRecoverySeconds ? `${operationsReport.meanTimeToRecoverySeconds.toFixed(1)}s` : "—"}</strong><small>{game.telemetry.incidentsResolved} resolved</small></article>
+              <article><span>Cost / 1k requests</span><strong>{operationsReport.costPerThousandRequests ? money(operationsReport.costPerThousandRequests) : "—"}</strong><small>{money(game.lifetimeRevenue)} revenue</small></article>
+            </div>
+
+            <div className="report-grid">
+              <section className="architecture-trace" aria-labelledby="architecture-trace-title">
+                <div className="report-section-heading">
+                  <div><span className="eyebrow">Architecture trace</span><h3 id="architecture-trace-title">Score over time</h3></div>
+                  <strong className={operationsReport.architectureTrend >= 0 ? "metric-good" : "metric-bad"}>{operationsReport.architectureTrend >= 0 ? "+" : ""}{operationsReport.architectureTrend}</strong>
+                </div>
+                <ol aria-label="Recent architecture score samples">
+                  {reportSamples.map((sample) => (
+                    <li key={sample.tick} title={`${elapsed(sample.tick)} · score ${sample.architectureScore}`}>
+                      <i style={{ height: `${Math.max(5, sample.architectureScore)}%` }} />
+                      <span>{sample.architectureScore}</span>
+                    </li>
+                  ))}
+                </ol>
+                <small>Sampled every six simulated seconds · current score {game.metrics.architectureScore}</small>
+              </section>
+
+              <section className="report-recommendations" aria-labelledby="recommendations-title">
+                <span className="eyebrow">Next deployment plan</span>
+                <h3 id="recommendations-title">Operator recommendations</h3>
+                <ol>
+                  {operationsReport.recommendations.map((recommendation, index) => (
+                    <li key={recommendation}><span>{String(index + 1).padStart(2, "0")}</span><p>{recommendation}</p></li>
+                  ))}
+                </ol>
+              </section>
+            </div>
+
+            <section className="run-history" aria-labelledby="run-history-title">
+              <div className="report-section-heading">
+                <div><span className="eyebrow">Private runbook</span><h3 id="run-history-title">Local run history</h3></div>
+                <div className="run-history-meta">
+                  <small>{runHistory.length} / 12 saved on this device</small>
+                  <button type="button" onClick={() => setShowClearHistory(true)} disabled={runHistory.length === 0}>Clear history</button>
+                </div>
+              </div>
+              {runHistory.length > 0 ? (
+                <ol>
+                  {runHistory.slice(0, 5).map((summary) => (
+                    <li key={summary.id}>
+                      <span className={`history-grade grade-${summary.grade.toLowerCase()}`}>{summary.grade}</span>
+                      <span><strong>{SCENARIOS[summary.scenario].name}</strong><small>{summary.reason === "campaign" ? "Campaign complete" : summary.reason === "failure" ? "Outage" : "Run retired"} · {elapsed(summary.durationTicks)}</small></span>
+                      <span><strong>{summary.score}</strong><small>score</small></span>
+                      <span><strong>{summary.incidentCount}</strong><small>incidents</small></span>
+                      <code>{summary.challengeCode}</code>
+                    </li>
+                  ))}
+                </ol>
+              ) : (
+                <p className="empty-history">Complete the campaign, lose the city, or start over to archive the first summary.</p>
+              )}
+              <p className="privacy-note">Run summaries never leave this browser. Challenge codes contain only the scenario and deterministic simulation seed.</p>
+            </section>
+
+            <footer className="report-actions">
+              {!game.gameOver && <button className="secondary-button" type="button" onClick={closeOperationsReport}>{game.objectiveIndex >= OBJECTIVES.length ? "Continue in endless mode" : "Return to city"}</button>}
+              <button className="primary-button" type="button" onClick={resetGame}>{game.gameOver ? "Rebuild the city" : "Start a new challenge"}</button>
+            </footer>
+          </section>
+        </div>
+      )}
+
       {showReset && (
         <div className="modal-backdrop confirm-backdrop">
           <section className="confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="reset-title">
@@ -1018,14 +1286,13 @@ export function StackCityGame() {
         </div>
       )}
 
-      {game.gameOver && (
-        <div className="modal-backdrop">
-          <section className="confirm-modal game-over-modal" role="dialog" aria-modal="true" aria-labelledby="game-over-title">
-            <span className="eyebrow alert">Service unavailable</span>
-            <h2 id="game-over-title">The city went dark.</h2>
-            <p>{game.money < -4500 ? "Operating costs exhausted the emergency budget." : "User satisfaction collapsed after sustained outages."} Review the bottleneck and try a safer architecture.</p>
-            <div className="game-over-stats"><span><small>Peak wave</small><strong>{game.wave}</strong></span><span><small>Revenue</small><strong>{money(game.lifetimeRevenue)}</strong></span><span><small>Score</small><strong>{game.metrics.architectureScore}</strong></span></div>
-            <button className="primary-button" type="button" onClick={resetGame}>Rebuild the city</button>
+      {showClearHistory && (
+        <div className="modal-backdrop confirm-backdrop">
+          <section className="confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="clear-history-title">
+            <span className="warning-mark">!</span>
+            <h2 id="clear-history-title">Clear local run history?</h2>
+            <p>This permanently removes all saved after-action summaries from this browser. Your active city will stay intact.</p>
+            <div><button className="secondary-button" type="button" onClick={() => setShowClearHistory(false)}>Keep history</button><button className="danger-button" type="button" onClick={clearRunHistory}>Clear history</button></div>
           </section>
         </div>
       )}

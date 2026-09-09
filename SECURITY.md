@@ -18,10 +18,20 @@ made public.
 ## Data and trust boundaries
 
 Stack City has no accounts, analytics, database, uploads, or third-party API
-keys. Game state is stored only in the current browser's `localStorage`, is
-size-limited and structurally validated before restoration, and can be erased
-through **Start a new city** or the browser's site-data controls. Invalid saves
-are discarded instead of partially trusted.
+keys. Active game state and the compact 12-run history are stored only in the
+current browser's `localStorage`. Both payloads are independently size-limited
+and structurally validated before restoration. Invalid saves or histories are
+discarded instead of partially trusted.
+
+Challenge codes contain only a public scenario identifier, a 32-bit simulation
+seed, and a checksum. They contain no save data, browser identifier, timestamp,
+account information, or personal data. Copying a code uses the browser
+clipboard and does not make a network request.
+
+**Start a new city** replaces the active save but deliberately retains the
+local run summaries. **Clear history** performs a confirmed erase of those
+summaries without touching the active city. Browser site-data controls erase
+all Stack City data.
 
 Repository secrets and local deployment state must stay in ignored `.env*` and
 `.vercel/` paths. Never commit credentials or real user data.

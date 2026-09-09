@@ -43,6 +43,11 @@ it on the map, and connects it to the API request path.
   availability, errors, revenue, operating cost, and user satisfaction
 - building placement, network links, four upgrade levels, repairs, and resale
 - incidents with service damage, recovery windows, and on-call costs
+- deterministic challenge codes for replaying or sharing a scenario seed
+- bounded operational telemetry with SLO, error-budget, incident, cost, and
+  architecture-score analysis
+- a responsive after-action report with bottleneck diagnosis, recommendations,
+  and a private 12-run local history
 - eight campaign objectives, five ranks, and ten achievements
 - an optional first-run walkthrough, adaptive live hints, and an architecture
   field guide
@@ -71,6 +76,11 @@ Then choose one of two learning paths:
 
 Returning players can continue their local city or replay the walkthrough. The
 Settings panel can turn guided hints on or off at any time.
+
+Every new run also has a deterministic challenge code. Choose **New seed** to
+generate a different pressure profile, paste a friend’s code and choose **Load
+code** to replay it, or copy the current code without sending any game or player
+data. A code contains only the scenario and a checked 32-bit simulation seed.
 
 ### 2. Read the current mission
 
@@ -125,6 +135,20 @@ latency, errors, and availability until the incident expires. A connected
 Watchtower reduces incident impact and represents metrics, logs, traces, and
 actionable alerting.
 
+### 8. Review the run
+
+Choose **Run review** at any time to pause and inspect the current operation.
+Completing the campaign or losing the city opens the after-action review
+automatically. It reports average availability, SLO compliance, error-budget
+burn, incident count, mean recovery time, infrastructure cost per thousand
+served requests, architecture-score history, the current bottleneck, and up to
+three specific next actions.
+
+Completed, failed, and retired runs add a compact summary to the private local
+runbook. The newest 12 summaries remain on the current device. Starting a new
+challenge preserves those summaries while replacing the active city save.
+Use **Clear history** in the review for an in-app, confirmed erase operation.
+
 ## Controls
 
 | Action | Mouse / touch | Keyboard |
@@ -135,6 +159,7 @@ actionable alerting.
 | Pause / resume | Use the speed control | `Space` or `P` |
 | Cancel a tool / close an overlay | Use Cancel or Close | `Escape` |
 | Change speed | Choose 1×, 2×, or 4× | Tab and press Enter |
+| Review operations | Choose Run review | Tab and press Enter |
 
 ## Service catalog
 
@@ -197,12 +222,16 @@ capacity, caching, resilience, queues, observability, and SLOs.
 
 ## Saving, privacy, and accessibility
 
-Stack City stores one versioned save in the browser's `localStorage`. Save data
-never leaves the device, is treated as untrusted input, and is validated before
-restoration. The parser rejects oversized payloads, invalid numeric ranges,
-duplicate IDs, overlapping buildings, forged connections, malformed events,
-and unknown catalog data. Version 1 saves migrate locally to the current schema.
-Starting a new city replaces that local save.
+Stack City stores one versioned active save and up to 12 compact run summaries
+in the browser's `localStorage`. This data never leaves the device, is treated
+as untrusted input, and is validated before restoration. The parsers reject
+oversized payloads, invalid numeric ranges, duplicate IDs, overlapping
+buildings, forged connections, malformed events or telemetry, forged challenge
+codes, and unknown catalog data. Version 1 and version 2 saves migrate locally
+to the current schema. Starting a new city replaces the active save but keeps
+the local runbook; browser site-data controls erase both.
+The review's **Clear history** control erases only archived summaries and leaves
+the active city intact.
 
 The interface supports keyboard navigation, touch targets, narrow screens,
 high-contrast mode, reduced-motion mode, and the operating system's reduced
@@ -217,6 +246,10 @@ flowchart LR
   Engine --> State["Immutable GameState"]
   State --> UI
   State --> Save["Validated localStorage save"]
+  Engine --> Telemetry["Bounded run telemetry"]
+  Telemetry --> Report["After-action review"]
+  Report --> History["Validated local runbook"]
+  Seed["Shareable challenge code"] --> Engine
   Catalog["Central balance catalog"] --> Engine
   Catalog --> UI
 ```

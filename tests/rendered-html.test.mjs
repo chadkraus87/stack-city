@@ -21,6 +21,9 @@ test("build prerenders the complete Stack City game shell", async () => {
   assert.match(html, /Steady Growth/);
   assert.match(html, /Launch Day/);
   assert.match(html, /Chaos Lab/);
+  assert.match(html, /Deterministic challenge code/);
+  assert.match(html, /Load code/);
+  assert.match(html, /New seed/);
   assert.match(html, /aria-label="Stack City infrastructure map"/);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Your site is taking shape/);
 });

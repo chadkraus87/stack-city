@@ -105,6 +105,80 @@ export interface Metrics {
   architectureScore: number;
 }
 
+export interface TelemetrySample {
+  tick: number;
+  architectureScore: number;
+  availability: number;
+  latency: number;
+  errorRate: number;
+}
+
+export interface RunTelemetry {
+  sampleCount: number;
+  totalDemand: number;
+  totalServed: number;
+  totalOperatingCost: number;
+  availabilityTotal: number;
+  availabilitySloTicks: number;
+  latencySloTicks: number;
+  errorSloTicks: number;
+  incidentsStarted: number;
+  incidentsResolved: number;
+  incidentsAutoRecovered: number;
+  totalResolutionTicks: number;
+  peakTraffic: number;
+  peakLatency: number;
+  peakSaturation: number;
+  minimumAvailability: number;
+  architectureHistory: TelemetrySample[];
+}
+
+export type BottleneckKind = "route" | "frontend" | "api" | "database";
+
+export interface BottleneckAnalysis {
+  kind: BottleneckKind;
+  label: string;
+  capacity: number;
+  utilization: number;
+  explanation: string;
+}
+
+export type RunEndReason = "live" | "campaign" | "failure" | "manual";
+
+export interface OperationsReport {
+  grade: "S" | "A" | "B" | "C" | "D";
+  score: number;
+  averageAvailability: number;
+  sloCompliance: number;
+  errorBudgetBurn: number;
+  meanTimeToRecoverySeconds: number;
+  costPerThousandRequests: number;
+  architectureTrend: number;
+  bottleneck: BottleneckAnalysis;
+  recommendations: string[];
+}
+
+export interface RunSummary {
+  id: string;
+  endedAt: number;
+  reason: Exclude<RunEndReason, "live">;
+  scenario: ScenarioId;
+  challengeSeed: number;
+  challengeCode: string;
+  durationTicks: number;
+  peakWave: number;
+  missionsCompleted: number;
+  grade: OperationsReport["grade"];
+  score: number;
+  averageAvailability: number;
+  errorBudgetBurn: number;
+  incidentCount: number;
+  meanTimeToRecoverySeconds: number;
+  costPerThousandRequests: number;
+  architectureScore: number;
+  lifetimeRevenue: number;
+}
+
 export interface ObjectiveDefinition {
   id: string;
   title: string;
@@ -120,8 +194,9 @@ export interface GameSettings {
 }
 
 export interface GameState {
-  version: 2;
+  version: 3;
   scenario: ScenarioId;
+  challengeSeed: number;
   seed: number;
   tick: number;
   money: number;
@@ -140,6 +215,8 @@ export interface GameState {
   objectiveIndex: number;
   tutorialComplete: boolean;
   gameOver: boolean;
+  reportRecorded: boolean;
   metrics: Metrics;
+  telemetry: RunTelemetry;
   settings: GameSettings;
 }

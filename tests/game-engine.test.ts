@@ -1,13 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  analyzeBottleneck,
   calculateMetrics,
+  createChallengeCode,
   createInitialState,
+  createOperationsReport,
+  createRunSummary,
   isValidGameState,
+  parseChallengeCode,
+  resolveIncident,
   restoreGameState,
+  restoreRunHistory,
   simulateTick,
 } from "../app/game/engine.ts";
-import type { Building, Connection, GameState } from "../app/game/types.ts";
+import type { Building, Connection, GameState, Incident } from "../app/game/types.ts";
 
 function connectedState(extraBuildings: Building[], extraConnections: Connection[]): GameState {
   const state = createInitialState();
@@ -100,6 +107,80 @@ test("operations scenarios create distinct, deterministic pressure profiles", ()
   assert.deepEqual(calculateMetrics(launchDay), calculateMetrics(launchDay));
 });
 
+test("challenge codes round-trip a scenario and deterministic 32-bit seed", () => {
+  const code = createChallengeCode("chaos-lab", 0xdeadbeef);
+
+  assert.match(code, /^SC1-C-[0-9A-Z]+-[0-9A-Z]{6}$/);
+  assert.deepEqual(parseChallengeCode(code.toLowerCase()), {
+    scenario: "chaos-lab",
+    seed: 0xdeadbeef,
+  });
+  assert.equal(parseChallengeCode(`${code.slice(0, -1)}X`), null);
+  assert.equal(parseChallengeCode("SC1-G-NOT-A-CODE"), null);
+
+  const seeded = createInitialState("launch-day", 123456789);
+  assert.equal(seeded.challengeSeed, 123456789);
+  assert.equal(seeded.seed, 123456789);
+});
+
+test("telemetry records SLOs, costs, peaks, and bounded architecture samples", () => {
+  let state = { ...createInitialState("launch-day", 9173), paused: false };
+  for (let index = 0; index < 3000; index += 1) state = simulateTick(state);
+
+  assert.equal(state.telemetry.sampleCount, state.tick);
+  assert.ok(state.telemetry.totalDemand > state.telemetry.totalServed);
+  assert.ok(state.telemetry.totalOperatingCost > 0);
+  assert.ok(state.telemetry.peakTraffic >= state.metrics.traffic);
+  assert.ok(state.telemetry.architectureHistory.length <= 240);
+  assert.ok(state.telemetry.architectureHistory.length > 1);
+  assert.ok(state.telemetry.availabilitySloTicks <= state.telemetry.sampleCount);
+});
+
+test("manual incident resolution contributes to MTTR and the after-action report", () => {
+  const incident: Incident = {
+    id: "incident-test",
+    buildingId: "api-1",
+    title: "Synthetic fault",
+    message: "A deterministic test incident.",
+    severity: "critical",
+    remaining: 20,
+    startedAt: 30,
+  };
+  const initial = createInitialState();
+  const state: GameState = {
+    ...initial,
+    tick: 42,
+    money: 10_000,
+    incidents: [incident],
+    telemetry: { ...initial.telemetry, incidentsStarted: 1 },
+  };
+  const resolved = resolveIncident(state, incident.id);
+  const report = createOperationsReport(resolved);
+
+  assert.equal(resolved.incidents.length, 0);
+  assert.equal(resolved.money, 9100);
+  assert.equal(resolved.telemetry.incidentsResolved, 1);
+  assert.equal(resolved.telemetry.totalResolutionTicks, 12);
+  assert.equal(report.meanTimeToRecoverySeconds, 6);
+  assert.ok(report.recommendations.length > 0);
+  assert.equal(analyzeBottleneck(resolved).kind, "database");
+});
+
+test("run history accepts catalog-derived summaries and rejects tampering", () => {
+  let state = { ...createInitialState("chaos-lab", 4444), paused: false };
+  for (let index = 0; index < 90; index += 1) state = simulateTick(state);
+  const summary = createRunSummary(state, "manual", 1_788_918_000_000);
+  const restored = restoreRunHistory({ version: 1, runs: [summary] });
+
+  assert.deepEqual(restored, [summary]);
+  assert.equal(restored[0].challengeCode, createChallengeCode("chaos-lab", 4444));
+  assert.equal(restoreRunHistory({
+    version: 1,
+    runs: [{ ...summary, challengeCode: "SC1-C-TAMPERED-AAAAAA" }],
+  }).length, 0);
+  assert.equal(restoreRunHistory({ version: 1, runs: Array(13).fill(summary) }).length, 0);
+});
+
 test("save validation accepts current state and rejects malformed input", () => {
   assert.equal(isValidGameState(createInitialState()), true);
   assert.equal(isValidGameState(null), false);
@@ -126,6 +207,10 @@ test("save validation accepts current state and rejects malformed input", () => 
       { id: "overlap", kind: "cache", x: 0, y: 2, level: 1, health: 100 },
     ],
   }), false);
+  assert.equal(isValidGameState({
+    ...createInitialState(),
+    telemetry: { ...createInitialState().telemetry, sampleCount: 1, availabilityTotal: 9 },
+  }), false);
 });
 
 test("version 1 saves migrate safely to the current growth scenario", () => {
@@ -136,7 +221,25 @@ test("version 1 saves migrate safely to the current growth scenario", () => {
   const restored = restoreGameState(legacy);
 
   assert.ok(restored);
-  assert.equal(restored.version, 2);
+  assert.equal(restored.version, 3);
   assert.equal(restored.scenario, "growth");
+  assert.equal(restored.challengeSeed, 82491);
+  assert.equal(restored.telemetry.sampleCount, 0);
   assert.equal(restored.metrics.traffic, current.metrics.traffic);
+});
+
+test("version 2 saves migrate without trusting missing telemetry", () => {
+  const current = createInitialState("launch-day", 7123);
+  const legacy: Record<string, unknown> = { ...current, version: 2 };
+  delete legacy.challengeSeed;
+  delete legacy.telemetry;
+  delete legacy.reportRecorded;
+
+  const restored = restoreGameState(legacy);
+
+  assert.ok(restored);
+  assert.equal(restored.version, 3);
+  assert.equal(restored.scenario, "launch-day");
+  assert.equal(restored.challengeSeed, 82491);
+  assert.equal(restored.telemetry.sampleCount, 0);
 });
