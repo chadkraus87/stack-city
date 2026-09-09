@@ -3,10 +3,53 @@ import type {
   BuildingDefinition,
   BuildingKind,
   ObjectiveDefinition,
+  ScenarioDefinition,
+  ScenarioId,
 } from "./types.ts";
 
 export const GRID_COLUMNS = 8;
 export const GRID_ROWS = 6;
+
+export const SCENARIOS: Record<ScenarioId, ScenarioDefinition> = {
+  growth: {
+    id: "growth",
+    name: "Steady Growth",
+    difficulty: "Standard",
+    description: "Build from a modest starter stack while traffic rises at a predictable pace.",
+    startingMoney: 28500,
+    baseTraffic: 42,
+    trafficGrowth: 0.17,
+    waveTraffic: 18,
+    incidentRisk: 1,
+    revenueMultiplier: 1,
+  },
+  "launch-day": {
+    id: "launch-day",
+    name: "Launch Day",
+    difficulty: "Advanced",
+    description: "A high-profile release sends demand climbing fast. Scale ahead of each wave.",
+    startingMoney: 34000,
+    baseTraffic: 58,
+    trafficGrowth: 0.25,
+    waveTraffic: 26,
+    incidentRisk: 1.2,
+    revenueMultiplier: 1.16,
+  },
+  "chaos-lab": {
+    id: "chaos-lab",
+    name: "Chaos Lab",
+    difficulty: "Expert",
+    description: "Frequent failures put observability, redundancy, and your reserve budget to the test.",
+    startingMoney: 32000,
+    baseTraffic: 46,
+    trafficGrowth: 0.2,
+    waveTraffic: 20,
+    incidentRisk: 1.8,
+    revenueMultiplier: 1.1,
+  },
+};
+
+export const SCENARIO_LIST = Object.values(SCENARIOS);
 
 export const BUILDINGS: Record<BuildingKind, BuildingDefinition> = {
   dns: {
@@ -322,4 +365,3 @@ export const INCIDENTS = [
   { title: "Packet loss", message: "Intermittent network loss is forcing retries.", severity: "warning" as const },
   { title: "Cache stampede", message: "Many requests are rebuilding the same expired value.", severity: "critical" as const },
 ];
-

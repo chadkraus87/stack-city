@@ -18,6 +18,9 @@ test("build prerenders the complete Stack City game shell", async () => {
   assert.match(html, /architect’s field guide/i);
   assert.match(html, /Start guided run/);
   assert.match(html, /Play without hints/);
+  assert.match(html, /Steady Growth/);
+  assert.match(html, /Launch Day/);
+  assert.match(html, /Chaos Lab/);
   assert.match(html, /aria-label="Stack City infrastructure map"/);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Your site is taking shape/);
 });
@@ -36,7 +39,10 @@ test("ships useful content and configures hardened response headers", async () =
   assert.match(html, /User satisfaction/);
   assert.match(html, /class="save-state (?:saving|saved)"/);
   assert.match(nextConfig, /frame-ancestors 'none'/);
+  assert.match(nextConfig, /script-src-attr 'none'/);
+  assert.match(nextConfig, /Cross-Origin-Resource-Policy/);
   assert.match(nextConfig, /X-Content-Type-Options/);
   assert.match(nextConfig, /X-Frame-Options/);
+  assert.match(nextConfig, /X-Permitted-Cross-Domain-Policies/);
   assert.match(nextConfig, /poweredByHeader:\s*false/);
 });

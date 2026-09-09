@@ -19,8 +19,9 @@ made public.
 
 Stack City has no accounts, analytics, database, uploads, or third-party API
 keys. Game state is stored only in the current browser's `localStorage`, is
-validated before restoration, and can be erased through **Start a new city** or
-the browser's site-data controls.
+size-limited and structurally validated before restoration, and can be erased
+through **Start a new city** or the browser's site-data controls. Invalid saves
+are discarded instead of partially trusted.
 
 Repository secrets and local deployment state must stay in ignored `.env*` and
 `.vercel/` paths. Never commit credentials or real user data.

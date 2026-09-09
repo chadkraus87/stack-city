@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { calculateMetrics, createInitialState, isValidGameState, simulateTick } from "../app/game/engine.ts";
+import {
+  calculateMetrics,
+  createInitialState,
+  isValidGameState,
+  restoreGameState,
+  simulateTick,
+} from "../app/game/engine.ts";
 import type { Building, Connection, GameState } from "../app/game/types.ts";
 
 function connectedState(extraBuildings: Building[], extraConnections: Connection[]): GameState {
@@ -82,6 +88,18 @@ test("simulation advances economy, objectives, traffic, and waves", () => {
   assert.ok(state.metrics.traffic > 42);
 });
 
+test("operations scenarios create distinct, deterministic pressure profiles", () => {
+  const growth = { ...createInitialState("growth"), tick: 100, wave: 2 };
+  const launchDay = { ...createInitialState("launch-day"), tick: 100, wave: 2 };
+  const chaosLab = createInitialState("chaos-lab");
+
+  assert.equal(growth.money, 28500);
+  assert.equal(launchDay.money, 34000);
+  assert.equal(chaosLab.money, 32000);
+  assert.ok(calculateMetrics(launchDay).traffic > calculateMetrics(growth).traffic);
+  assert.deepEqual(calculateMetrics(launchDay), calculateMetrics(launchDay));
+});
+
 test("save validation accepts current state and rejects malformed input", () => {
   assert.equal(isValidGameState(createInitialState()), true);
   assert.equal(isValidGameState(null), false);
@@ -91,4 +109,34 @@ test("save validation accepts current state and rejects malformed input", () => 
     ...createInitialState(),
     buildings: [{ id: "hostile", kind: "script", x: 0, y: 0, level: 99, health: Infinity }],
   }), false);
+  assert.equal(isValidGameState({ ...createInitialState(), objectiveIndex: 999 }), false);
+  assert.equal(isValidGameState({
+    ...createInitialState(),
+    events: Array.from({ length: 19 }, (_, index) => ({
+      id: `event-${index}`,
+      tick: 0,
+      tone: "info",
+      message: "oversized",
+    })),
+  }), false);
+  assert.equal(isValidGameState({
+    ...createInitialState(),
+    buildings: [
+      ...createInitialState().buildings,
+      { id: "overlap", kind: "cache", x: 0, y: 2, level: 1, health: 100 },
+    ],
+  }), false);
+});
+
+test("version 1 saves migrate safely to the current growth scenario", () => {
+  const current = createInitialState();
+  const legacy: Record<string, unknown> = { ...current, version: 1 };
+  delete legacy.scenario;
+
+  const restored = restoreGameState(legacy);
+
+  assert.ok(restored);
+  assert.equal(restored.version, 2);
+  assert.equal(restored.scenario, "growth");
+  assert.equal(restored.metrics.traffic, current.metrics.traffic);
 });

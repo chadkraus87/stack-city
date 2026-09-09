@@ -1810,9 +1810,10 @@ kbd {
 
 .intro-modal {
   display: grid;
-  width: min(970px, 100%);
-  min-height: 520px;
-  grid-template-columns: 1.05fr 0.95fr;
+  width: min(1180px, 100%);
+  max-height: calc(100dvh - 48px);
+  min-height: 620px;
+  grid-template-columns: 0.9fr 1.1fr;
   overflow: hidden;
   border: 1px solid #284044;
   background: #091116;
@@ -1822,7 +1823,7 @@ kbd {
 
 .intro-visual {
   position: relative;
-  min-height: 520px;
+  min-height: 620px;
   overflow: hidden;
   border-right: 1px solid var(--line);
   background:
@@ -1956,7 +1957,8 @@ kbd {
   display: flex;
   flex-direction: column;
   justify-content: center;
-  padding: clamp(35px, 5vw, 66px);
+  overflow-y: auto;
+  padding: clamp(32px, 4vw, 54px);
 }
 
 .intro-content h2 {
@@ -2011,6 +2013,99 @@ kbd {
   font-family: var(--font-display);
   font-size: 15px;
   letter-spacing: -0.03em;
+}
+
+.scenario-picker {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+  margin-bottom: 9px;
+}
+
+.scenario-picker-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 2px;
+  grid-column: 1 / -1;
+}
+
+.scenario-picker-heading small,
+.scenario-picker button > b,
+.scenario-brief small {
+  color: var(--muted);
+  font-family: var(--font-code);
+  font-size: 7px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.scenario-picker button {
+  display: flex;
+  min-height: 58px;
+  align-items: flex-start;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 7px;
+  padding: 8px 11px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: #080e13;
+  cursor: pointer;
+  text-align: left;
+  transition: 150ms ease;
+}
+
+.scenario-picker button:hover {
+  border-color: var(--line-strong);
+  background: var(--panel-2);
+}
+
+.scenario-picker button.selected {
+  border-color: rgba(184, 247, 82, 0.58);
+  background: rgba(184, 247, 82, 0.07);
+  box-shadow: inset 2px 0 var(--acid);
+}
+
+.scenario-picker button > span {
+  display: grid;
+  gap: 3px;
+}
+
+.scenario-picker button strong {
+  font-family: var(--font-display);
+  font-size: 13px;
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+}
+
+.scenario-picker button small {
+  color: var(--muted-bright);
+  font-size: 8px;
+  line-height: 1.35;
+}
+
+.scenario-picker button.selected > b,
+.scenario-picker button.selected strong {
+  color: var(--acid);
+}
+
+.scenario-brief {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 30px;
+  margin-bottom: 10px;
+  color: var(--muted-bright);
+  font-size: 8px;
+  line-height: 1.4;
+}
+
+.scenario-brief small {
+  flex: 0 0 auto;
+  color: var(--cyan);
 }
 
 .start-button {
@@ -2565,6 +2660,9 @@ kbd {
   .intro-content h2 { font-size: 38px; }
   .intro-content > p { margin-top: 17px; font-size: 11px; }
   .intro-features { margin-block: 18px; }
+  .scenario-picker { grid-template-columns: 1fr; }
+  .scenario-picker button { min-height: 46px; align-items: center; flex-direction: row; }
+  .scenario-brief { align-items: flex-start; flex-direction: column; gap: 4px; }
   .guide-intro { grid-template-columns: 1fr; gap: 12px; }
   .guide-flow { justify-content: flex-start; overflow-x: auto; }
   .guide-flow span { min-width: 63px; }

@@ -18,6 +18,20 @@ export type BuildingKind = (typeof BUILDING_KINDS)[number];
 export type BuildingCategory = "Edge" | "Compute" | "Data" | "Platform";
 export type Severity = "warning" | "critical";
 export type GameSpeed = 0 | 1 | 2 | 4;
+export type ScenarioId = "growth" | "launch-day" | "chaos-lab";
+
+export interface ScenarioDefinition {
+  id: ScenarioId;
+  name: string;
+  difficulty: "Standard" | "Advanced" | "Expert";
+  description: string;
+  startingMoney: number;
+  baseTraffic: number;
+  trafficGrowth: number;
+  waveTraffic: number;
+  incidentRisk: number;
+  revenueMultiplier: number;
+}
 
 export interface BuildingDefinition {
   kind: BuildingKind;
@@ -106,7 +120,8 @@ export interface GameSettings {
 }
 
 export interface GameState {
-  version: 1;
+  version: 2;
+  scenario: ScenarioId;
   seed: number;
   tick: number;
   money: number;
@@ -128,4 +143,3 @@ export interface GameState {
   metrics: Metrics;
   settings: GameSettings;
 }
-

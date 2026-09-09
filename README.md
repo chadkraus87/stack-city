@@ -37,6 +37,8 @@ it on the map, and connects it to the API request path.
 ## What is in the game
 
 - 13 infrastructure types across edge, compute, data, and platform layers
+- three operations scenarios with distinct budgets, traffic curves, revenue,
+  and incident pressure
 - a deterministic simulation of traffic, capacity, saturation, latency,
   availability, errors, revenue, operating cost, and user satisfaction
 - building placement, network links, four upgrade levels, repairs, and resale
@@ -52,8 +54,16 @@ it on the map, and connects it to the API request path.
 
 ### 1. Choose your starting experience
 
-Open the [live game](https://stack-city-eight.vercel.app). A new city offers two
-paths:
+Open the [live game](https://stack-city-eight.vercel.app). First choose an
+operations drill:
+
+- **Steady Growth** is the balanced campaign and the best first city.
+- **Launch Day** provides more capital and revenue, but traffic grows much
+  faster.
+- **Chaos Lab** raises incident pressure and rewards observability and
+  redundancy.
+
+Then choose one of two learning paths:
 
 - **Start guided run** opens the six-step walkthrough and keeps contextual
   hints active during play.
@@ -189,7 +199,10 @@ capacity, caching, resilience, queues, observability, and SLOs.
 
 Stack City stores one versioned save in the browser's `localStorage`. Save data
 never leaves the device, is treated as untrusted input, and is validated before
-restoration. Starting a new city replaces that local save.
+restoration. The parser rejects oversized payloads, invalid numeric ranges,
+duplicate IDs, overlapping buildings, forged connections, malformed events,
+and unknown catalog data. Version 1 saves migrate locally to the current schema.
+Starting a new city replaces that local save.
 
 The interface supports keyboard navigation, touch targets, narrow screens,
 high-contrast mode, reduced-motion mode, and the operating system's reduced
@@ -214,7 +227,7 @@ authentication provider, analytics SDK, or external API is required.
 
 Important files:
 
-- `app/game/catalog.ts` — services, missions, incidents, ranks, and balance
+- `app/game/catalog.ts` — scenarios, services, missions, incidents, ranks, and balance
 - `app/game/engine.ts` — deterministic state transitions and simulation rules
 - `app/game/StackCityGame.tsx` — interaction and presentation controller
 - `app/globals.css` — responsive visual system
@@ -251,10 +264,12 @@ The release gate runs deterministic engine tests, production prerender checks,
 TypeScript compilation, React and accessibility lint rules, desktop and phone
 browser playtests, console-error inspection, and dependency audits.
 
-Production responses set a restrictive Content Security Policy, deny framing,
-disable MIME sniffing, restrict browser permissions, use a strict referrer
-policy, and omit the framework signature header. The game does not render raw
-HTML, execute user-supplied code, accept uploads, or store secrets.
+Production responses set a restrictive Content Security Policy, block inline
+event-handler scripts and framing, isolate cross-origin resources, disable MIME
+sniffing and legacy cross-domain policies, restrict browser permissions, use a
+strict referrer policy, and omit the framework signature header. The game does
+not render raw HTML, execute user-supplied code, accept uploads, or store
+secrets.
 
 Run the same local gate with:
 

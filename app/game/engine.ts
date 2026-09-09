@@ -4,6 +4,7 @@ import {
   INCIDENTS,
   OBJECTIVES,
   RANKS,
+  SCENARIOS,
 } from "./catalog.ts";
 import type {
   Achievement,
@@ -14,6 +15,7 @@ import type {
   GameState,
   Incident,
   Metrics,
+  ScenarioId,
 } from "./types.ts";
 import { BUILDING_KINDS } from "./types.ts";
 
@@ -45,12 +47,14 @@ const starterConnections: Connection[] = [
   { id: "link-api-db", from: "api-1", to: "db-1" },
 ];
 
-export function createInitialState(): GameState {
+export function createInitialState(scenario: ScenarioId = "growth"): GameState {
+  const scenarioDefinition = SCENARIOS[scenario];
   const base: GameState = {
-    version: 1,
+    version: 2,
+    scenario,
     seed: 82491,
     tick: 0,
-    money: 28500,
+    money: scenarioDefinition.startingMoney,
     lifetimeRevenue: 0,
     satisfaction: 78,
     xp: 0,
@@ -66,7 +70,7 @@ export function createInitialState(): GameState {
         id: "welcome",
         tick: 0,
         tone: "info",
-        message: "Starter route provisioned. City is ready for traffic.",
+        message: `${scenarioDefinition.name} scenario provisioned. City is ready for traffic.`,
       },
     ],
     achievements: ACHIEVEMENT_CATALOG.map((achievement) => ({ ...achievement })),
@@ -129,12 +133,16 @@ function sumCapacity(buildings: Building[], kind: BuildingKind): number {
 }
 
 export function calculateMetrics(state: GameState): Metrics {
+  const scenario = SCENARIOS[state.scenario];
   const connectedIds = connectedBuildingIds(state.buildings, state.connections);
   const active = state.buildings.filter(
     (building) => connectedIds.has(building.id) && building.health > 0,
   );
-  const waveFloor = (state.wave - 1) * 18;
-  const traffic = Math.max(42, 42 + state.tick * 0.17 + waveFloor);
+  const waveFloor = (state.wave - 1) * scenario.waveTraffic;
+  const traffic = Math.max(
+    scenario.baseTraffic,
+    scenario.baseTraffic + state.tick * scenario.trafficGrowth + waveFloor,
+  );
   const frontends = active.filter((building) => building.kind === "frontend");
   const apis = active.filter((building) => building.kind === "api");
   const databases = active.filter((building) => building.kind === "database");
@@ -201,7 +209,11 @@ export function calculateMetrics(state: GameState): Metrics {
     0,
   );
   const trustMultiplier = 1 + Math.min(0.09, authCount * 0.045);
-  const revenue = served * 2.15 * Math.max(0.35, state.satisfaction / 100) * trustMultiplier;
+  const revenue = served
+    * 2.15
+    * Math.max(0.35, state.satisfaction / 100)
+    * trustMultiplier
+    * scenario.revenueMultiplier;
 
   const redundancy = Math.min(18, Math.max(0, apis.length - 1) * 6 + Math.max(0, databases.length - 1) * 8);
   const capabilityKinds: BuildingKind[] = ["cache", "cdn", "loadBalancer", "queue", "worker", "monitoring", "auth", "storage"];
@@ -329,8 +341,16 @@ export function simulateTick(state: GameState): GameState {
   }
 
   const metricsBefore = calculateMetrics({ ...state, tick, incidents });
-  const incidentInterval = Math.max(12, 24 - state.wave * 2);
-  if (tick > 18 && tick % incidentInterval === 0 && random < Math.min(0.62, 0.2 + state.wave * 0.055)) {
+  const scenario = SCENARIOS[state.scenario];
+  const incidentInterval = Math.max(
+    8,
+    Math.round((24 - Math.min(6, state.wave) * 2) / scenario.incidentRisk),
+  );
+  const incidentChance = Math.min(
+    0.78,
+    (0.2 + state.wave * 0.055) * scenario.incidentRisk,
+  );
+  if (tick > 18 && tick % incidentInterval === 0 && random < incidentChance) {
     const incident = createIncident({ ...state, tick, incidents }, random);
     if (incident) {
       incidents = [...incidents, incident];
@@ -420,82 +440,234 @@ export function simulateTick(state: GameState): GameState {
   };
 }
 
+const VALID_BUILDING_KINDS = new Set<string>(BUILDING_KINDS);
+const VALID_SCENARIOS = new Set<string>(Object.keys(SCENARIOS));
+const VALID_SPEEDS = new Set<number>([0, 1, 2, 4]);
+const MAX_TICK = 10_000_000;
+const MAX_CONNECTIONS = 512;
+const SAFE_ID = /^[a-zA-Z0-9._:-]{1,96}$/;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isFiniteBetween(value: unknown, minimum: number, maximum: number): value is number {
+  return typeof value === "number"
+    && Number.isFinite(value)
+    && value >= minimum
+    && value <= maximum;
+}
+
+function isIntegerBetween(value: unknown, minimum: number, maximum: number): value is number {
+  return isFiniteBetween(value, minimum, maximum) && Number.isInteger(value);
+}
+
+function isSafeText(value: unknown, maximumLength: number): value is string {
+  return typeof value === "string"
+    && value.length <= maximumLength
+    && Array.from(value).every((character) => {
+      const codePoint = character.codePointAt(0) ?? 0;
+      return codePoint >= 32 && codePoint !== 127;
+    });
+}
+
+/**
+ * Treat browser storage as an untrusted boundary. This parser validates every
+ * field the simulation consumes, caps collection sizes, and reconstructs
+ * catalog-owned copy instead of trusting it from localStorage.
+ */
+export function restoreGameState(value: unknown): GameState | null {
+  if (!isRecord(value) || (value.version !== 1 && value.version !== 2)) return null;
+
+  const scenario = value.version === 1
+    ? "growth"
+    : typeof value.scenario === "string" && VALID_SCENARIOS.has(value.scenario)
+      ? value.scenario as ScenarioId
+      : null;
+  if (!scenario) return null;
+
+  if (!isIntegerBetween(value.seed, 0, 0xffffffff)
+    || !isIntegerBetween(value.tick, 0, MAX_TICK)
+    || !isFiniteBetween(value.money, -1_000_000_000, 1_000_000_000_000)
+    || !isFiniteBetween(value.lifetimeRevenue, 0, 1_000_000_000_000_000)
+    || !isFiniteBetween(value.satisfaction, 0, 100)
+    || !isFiniteBetween(value.xp, 0, 1_000_000_000)
+    || !isIntegerBetween(value.rank, 1, RANKS.length)
+    || !isIntegerBetween(value.wave, 1, 1_000_000)
+    || typeof value.paused !== "boolean"
+    || !isIntegerBetween(value.speed, 0, 4)
+    || !VALID_SPEEDS.has(value.speed)
+    || !isIntegerBetween(value.objectiveIndex, 0, OBJECTIVES.length)
+    || typeof value.tutorialComplete !== "boolean"
+    || typeof value.gameOver !== "boolean") {
+    return null;
+  }
+
+  if (!Array.isArray(value.buildings) || value.buildings.length > 48) return null;
+  const buildings: Building[] = [];
+  const buildingIds = new Set<string>();
+  const occupiedCells = new Set<string>();
+  for (const candidate of value.buildings) {
+    if (!isRecord(candidate)
+      || typeof candidate.id !== "string"
+      || !SAFE_ID.test(candidate.id)
+      || buildingIds.has(candidate.id)
+      || typeof candidate.kind !== "string"
+      || !VALID_BUILDING_KINDS.has(candidate.kind)
+      || !isIntegerBetween(candidate.x, 0, 7)
+      || !isIntegerBetween(candidate.y, 0, 5)
+      || !isIntegerBetween(candidate.level, 1, 4)
+      || !isFiniteBetween(candidate.health, 0, 100)) {
+      return null;
+    }
+    const cell = `${candidate.x}:${candidate.y}`;
+    if (occupiedCells.has(cell)) return null;
+    occupiedCells.add(cell);
+    buildingIds.add(candidate.id);
+    buildings.push({
+      id: candidate.id,
+      kind: candidate.kind as BuildingKind,
+      x: candidate.x,
+      y: candidate.y,
+      level: candidate.level,
+      health: candidate.health,
+    });
+  }
+
+  if (!Array.isArray(value.connections) || value.connections.length > MAX_CONNECTIONS) return null;
+  const connections: Connection[] = [];
+  const connectionIds = new Set<string>();
+  const connectionPairs = new Set<string>();
+  for (const candidate of value.connections) {
+    if (!isRecord(candidate)
+      || typeof candidate.id !== "string"
+      || !SAFE_ID.test(candidate.id)
+      || connectionIds.has(candidate.id)
+      || typeof candidate.from !== "string"
+      || typeof candidate.to !== "string"
+      || candidate.from === candidate.to
+      || !buildingIds.has(candidate.from)
+      || !buildingIds.has(candidate.to)) {
+      return null;
+    }
+    const pair = [candidate.from, candidate.to].sort().join(":");
+    if (connectionPairs.has(pair)) return null;
+    connectionIds.add(candidate.id);
+    connectionPairs.add(pair);
+    connections.push({ id: candidate.id, from: candidate.from, to: candidate.to });
+  }
+
+  if (!Array.isArray(value.incidents) || value.incidents.length > 48) return null;
+  const incidents: Incident[] = [];
+  const incidentIds = new Set<string>();
+  for (const candidate of value.incidents) {
+    if (!isRecord(candidate)
+      || typeof candidate.id !== "string"
+      || !SAFE_ID.test(candidate.id)
+      || incidentIds.has(candidate.id)
+      || typeof candidate.buildingId !== "string"
+      || !buildingIds.has(candidate.buildingId)
+      || !isSafeText(candidate.title, 120)
+      || !isSafeText(candidate.message, 300)
+      || (candidate.severity !== "warning" && candidate.severity !== "critical")
+      || !isIntegerBetween(candidate.remaining, 1, 10_000)
+      || !isIntegerBetween(candidate.startedAt, 0, MAX_TICK)) {
+      return null;
+    }
+    incidentIds.add(candidate.id);
+    incidents.push({
+      id: candidate.id,
+      buildingId: candidate.buildingId,
+      title: candidate.title,
+      message: candidate.message,
+      severity: candidate.severity,
+      remaining: candidate.remaining,
+      startedAt: candidate.startedAt,
+    });
+  }
+
+  if (!Array.isArray(value.events) || value.events.length > 18) return null;
+  const events: GameEvent[] = [];
+  const eventIds = new Set<string>();
+  for (const candidate of value.events) {
+    if (!isRecord(candidate)
+      || typeof candidate.id !== "string"
+      || !SAFE_ID.test(candidate.id)
+      || eventIds.has(candidate.id)
+      || !isIntegerBetween(candidate.tick, 0, MAX_TICK)
+      || (candidate.tone !== "info" && candidate.tone !== "good" && candidate.tone !== "bad")
+      || !isSafeText(candidate.message, 300)) {
+      return null;
+    }
+    eventIds.add(candidate.id);
+    events.push({
+      id: candidate.id,
+      tick: candidate.tick,
+      tone: candidate.tone,
+      message: candidate.message,
+    });
+  }
+
+  if (!Array.isArray(value.achievements)
+    || value.achievements.length > ACHIEVEMENT_CATALOG.length) return null;
+  const unlockedAchievements = new Map<string, number>();
+  const validAchievementIds = new Set(ACHIEVEMENT_CATALOG.map((achievement) => achievement.id));
+  for (const candidate of value.achievements) {
+    if (!isRecord(candidate)
+      || typeof candidate.id !== "string"
+      || !validAchievementIds.has(candidate.id)
+      || unlockedAchievements.has(candidate.id)
+      || (candidate.unlockedAt !== undefined
+        && !isIntegerBetween(candidate.unlockedAt, 0, MAX_TICK))) {
+      return null;
+    }
+    unlockedAchievements.set(candidate.id, candidate.unlockedAt as number);
+  }
+  const achievements = ACHIEVEMENT_CATALOG.map((achievement) => {
+    const unlockedAt = unlockedAchievements.get(achievement.id);
+    return unlockedAt === undefined ? { ...achievement } : { ...achievement, unlockedAt };
+  });
+
+  if (!isRecord(value.settings)
+    || typeof value.settings.sound !== "boolean"
+    || typeof value.settings.reducedMotion !== "boolean"
+    || typeof value.settings.highContrast !== "boolean") {
+    return null;
+  }
+
+  const restored: GameState = {
+    version: 2,
+    scenario,
+    seed: value.seed,
+    tick: value.tick,
+    money: value.money,
+    lifetimeRevenue: value.lifetimeRevenue,
+    satisfaction: value.satisfaction,
+    xp: value.xp,
+    rank: value.rank,
+    wave: value.wave,
+    paused: value.paused,
+    speed: value.speed as GameState["speed"],
+    buildings,
+    connections,
+    incidents,
+    events,
+    achievements,
+    objectiveIndex: value.objectiveIndex,
+    tutorialComplete: value.tutorialComplete,
+    gameOver: value.gameOver,
+    metrics: { ...EMPTY_METRICS },
+    settings: {
+      sound: value.settings.sound,
+      reducedMotion: value.settings.reducedMotion,
+      highContrast: value.settings.highContrast,
+    },
+  };
+  return { ...restored, metrics: calculateMetrics(restored) };
+}
+
 export function isValidGameState(value: unknown): value is GameState {
-  if (!value || typeof value !== "object") return false;
-  const state = value as Partial<GameState>;
-  const finite = (candidate: unknown): candidate is number => typeof candidate === "number" && Number.isFinite(candidate);
-  const validBuildingKinds = new Set<string>(BUILDING_KINDS);
-  const buildingsValid = Array.isArray(state.buildings) && state.buildings.every((candidate) => {
-    if (!candidate || typeof candidate !== "object") return false;
-    const building = candidate as Partial<Building>;
-    return typeof building.id === "string"
-      && building.id.length > 0
-      && typeof building.kind === "string"
-      && validBuildingKinds.has(building.kind)
-      && Number.isInteger(building.x)
-      && Number.isInteger(building.y)
-      && finite(building.x)
-      && finite(building.y)
-      && building.x >= 0
-      && building.x < 8
-      && building.y >= 0
-      && building.y < 6
-      && Number.isInteger(building.level)
-      && finite(building.level)
-      && building.level >= 1
-      && building.level <= 4
-      && finite(building.health)
-      && building.health >= 0
-      && building.health <= 100;
-  });
-  const buildingIds = new Set<string>(
-    Array.isArray(state.buildings)
-      ? state.buildings
-          .filter((building) => building && typeof building === "object" && typeof building.id === "string")
-          .map((building) => building.id)
-      : [],
-  );
-  const connectionsValid = Array.isArray(state.connections) && state.connections.every((candidate) => {
-    if (!candidate || typeof candidate !== "object") return false;
-    const connection = candidate as Partial<Connection>;
-    return typeof connection.id === "string"
-      && typeof connection.from === "string"
-      && typeof connection.to === "string"
-      && connection.from !== connection.to
-      && buildingIds.has(connection.from)
-      && buildingIds.has(connection.to);
-  });
-  const incidentsValid = Array.isArray(state.incidents) && state.incidents.every((candidate) => {
-    if (!candidate || typeof candidate !== "object") return false;
-    const incident = candidate as Partial<Incident>;
-    return typeof incident.id === "string"
-      && typeof incident.buildingId === "string"
-      && buildingIds.has(incident.buildingId)
-      && typeof incident.title === "string"
-      && typeof incident.message === "string"
-      && (incident.severity === "warning" || incident.severity === "critical")
-      && finite(incident.remaining)
-      && finite(incident.startedAt);
-  });
-  const settingsValid = !!state.settings
-    && typeof state.settings.sound === "boolean"
-    && typeof state.settings.reducedMotion === "boolean"
-    && typeof state.settings.highContrast === "boolean";
-  return state.version === 1
-    && finite(state.seed)
-    && finite(state.tick)
-    && finite(state.money)
-    && finite(state.satisfaction)
-    && finite(state.xp)
-    && finite(state.rank)
-    && finite(state.wave)
-    && typeof state.paused === "boolean"
-    && buildingsValid
-    && connectionsValid
-    && incidentsValid
-    && Array.isArray(state.events)
-    && Array.isArray(state.achievements)
-    && settingsValid;
+  return isRecord(value) && value.version === 2 && restoreGameState(value) !== null;
 }
 
 export function nextId(prefix: string, state: GameState): string {

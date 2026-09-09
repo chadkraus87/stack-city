@@ -15,6 +15,8 @@ import {
   GRID_ROWS,
   OBJECTIVES,
   RANKS,
+  SCENARIOS,
+  SCENARIO_LIST,
 } from "./catalog.ts";
 import {
   addManualAchievement,
@@ -22,8 +24,8 @@ import {
   calculateMetrics,
   connectedBuildingIds,
   createInitialState,
-  isValidGameState,
   nextId,
+  restoreGameState,
   simulateTick,
 } from "./engine.ts";
 import type {
@@ -32,9 +34,12 @@ import type {
   BuildingKind,
   GameSpeed,
   GameState,
+  ScenarioId,
 } from "./types.ts";
 
-const SAVE_KEY = "stack-city-save-v1";
+const SAVE_KEY = "stack-city-save-v2";
+const LEGACY_SAVE_KEY = "stack-city-save-v1";
+const MAX_SAVE_BYTES = 250_000;
 const CONNECTION_COST = 250;
 const CATEGORIES: Array<BuildingCategory | "All"> = ["All", "Edge", "Compute", "Data", "Platform"];
 const GRID_CELLS = Array.from({ length: GRID_COLUMNS * GRID_ROWS }, (_, index) => ({
@@ -144,6 +149,7 @@ export function StackCityGame() {
   const [showReset, setShowReset] = useState(false);
   const [tourStep, setTourStep] = useState<number | null>(null);
   const [lastSavedTick, setLastSavedTick] = useState<number | null>(null);
+  const [selectedScenario, setSelectedScenario] = useState<ScenarioId>("growth");
   const audioContextRef = useRef<AudioContext | null>(null);
   const resumeAfterTourRef = useRef(true);
 
@@ -171,17 +177,25 @@ export function StackCityGame() {
   useEffect(() => {
     const timer = window.setTimeout(() => {
       try {
-        const raw = window.localStorage.getItem(SAVE_KEY);
+        const raw = window.localStorage.getItem(SAVE_KEY)
+          ?? window.localStorage.getItem(LEGACY_SAVE_KEY);
         if (raw) {
-          const parsed: unknown = JSON.parse(raw);
-          if (isValidGameState(parsed)) {
-            const restored = withFreshMetrics({ ...parsed, paused: true });
+          if (raw.length > MAX_SAVE_BYTES) throw new Error("Saved game exceeds the safety limit.");
+          const restoredState = restoreGameState(JSON.parse(raw));
+          if (restoredState) {
+            const restored = withFreshMetrics({ ...restoredState, paused: true });
             setGame(restored);
+            setSelectedScenario(restored.scenario);
             setLastSavedTick(restored.tick);
+            window.localStorage.removeItem(LEGACY_SAVE_KEY);
+          } else {
+            window.localStorage.removeItem(SAVE_KEY);
+            window.localStorage.removeItem(LEGACY_SAVE_KEY);
           }
         }
       } catch {
         window.localStorage.removeItem(SAVE_KEY);
+        window.localStorage.removeItem(LEGACY_SAVE_KEY);
       } finally {
         setHydrated(true);
       }
@@ -194,6 +208,7 @@ export function StackCityGame() {
     const timer = window.setTimeout(() => {
       try {
         window.localStorage.setItem(SAVE_KEY, JSON.stringify(game));
+        window.localStorage.removeItem(LEGACY_SAVE_KEY);
         setLastSavedTick(game.tick);
       } catch {
         // Storage can be unavailable in private or restricted browsing modes.
@@ -259,6 +274,7 @@ export function StackCityGame() {
   const incidentBuildingIds = new Set(game.incidents.map((incident) => incident.buildingId));
   const unlockedAchievements = game.achievements.filter((achievement) => achievement.unlockedAt !== undefined);
   const saveStatus = lastSavedTick === game.tick ? "saved" : "saving";
+  const scenarioDefinition = SCENARIOS[game.scenario];
 
   const commit = useCallback((transition: (current: GameState) => GameState) => {
     setGame((current) => withFreshMetrics(transition(current)));
@@ -437,12 +453,14 @@ export function StackCityGame() {
   };
 
   const startGuidedRun = () => {
+    const fresh = createInitialState(selectedScenario);
     resumeAfterTourRef.current = true;
     setShowIntro(false);
     setShowGuide(false);
     setShowSettings(false);
     setTourStep(0);
-    setGame((current) => ({ ...current, paused: true, tutorialComplete: false }));
+    setGame({ ...fresh, paused: true, tutorialComplete: false });
+    setSelectedId("web-1");
     playTone(640, 0.1);
   };
 
@@ -453,8 +471,10 @@ export function StackCityGame() {
   };
 
   const startUnguidedRun = () => {
+    const fresh = createInitialState(selectedScenario);
     setShowIntro(false);
-    setGame((current) => ({ ...current, paused: false, tutorialComplete: true }));
+    setGame({ ...fresh, paused: false, tutorialComplete: true });
+    setSelectedId("web-1");
     playTone(540, 0.08);
   };
 
@@ -480,7 +500,9 @@ export function StackCityGame() {
   const resetGame = () => {
     const fresh = createInitialState();
     window.localStorage.removeItem(SAVE_KEY);
+    window.localStorage.removeItem(LEGACY_SAVE_KEY);
     setGame(fresh);
+    setSelectedScenario("growth");
     setSelectedId("web-1");
     setBuildMode(null);
     setConnectFrom(null);
@@ -631,6 +653,7 @@ export function StackCityGame() {
               <div><small>System status</small><strong>{boardTone === "healthy" ? "All systems nominal" : boardTone === "warning" ? "Capacity at risk" : boardTone === "critical" ? "Incident active" : "Route incomplete"}</strong></div>
             </div>
             <div className="wave-clock">
+              <span>Scenario <strong>{scenarioDefinition.name}</strong></span>
               <span>Wave <strong>{game.wave}</strong></span>
               <span>Uptime <strong>{elapsed(game.tick)}</strong></span>
             </div>
@@ -862,7 +885,7 @@ export function StackCityGame() {
         </div>
       )}
 
-      {showIntro && (
+      {showIntro && !game.gameOver && (
         <div className="modal-backdrop">
           <section className="intro-modal" role="dialog" aria-modal="true" aria-labelledby="intro-title">
             <div className="intro-visual" aria-hidden="true">
@@ -882,7 +905,7 @@ export function StackCityGame() {
               <h2 id="intro-title">Build the infrastructure.<br /><em>Survive the traffic.</em></h2>
               <p>You’re the mayor of a digital city. Place services, connect the request path, scale bottlenecks, and keep users happy when production gets messy.</p>
               <div className="intro-features">
-                <span><b>13</b> service types</span><span><b>Guided</b> first run</span><span><b>Local</b> autosave</span>
+                <span><b>13</b> service types</span><span><b>3</b> operations drills</span><span><b>Local</b> autosave</span>
               </div>
               {game.tick > 0 ? (
                 <div className="intro-actions">
@@ -890,10 +913,35 @@ export function StackCityGame() {
                   <button className="secondary-button" type="button" onClick={replayTour}>Replay walkthrough</button>
                 </div>
               ) : (
-                <div className="intro-actions">
-                  <button className="primary-button start-button" type="button" onClick={startGuidedRun}>Start guided run<span>→</span></button>
-                  <button className="secondary-button" type="button" onClick={startUnguidedRun}>Play without hints</button>
-                </div>
+                <>
+                  <div className="scenario-picker" role="radiogroup" aria-labelledby="scenario-picker-title">
+                    <div className="scenario-picker-heading">
+                      <span className="eyebrow" id="scenario-picker-title">Choose an operations drill</span>
+                      <small>{SCENARIOS[selectedScenario].difficulty}</small>
+                    </div>
+                    {SCENARIO_LIST.map((scenario) => (
+                      <button
+                        className={selectedScenario === scenario.id ? "selected" : ""}
+                        type="button"
+                        role="radio"
+                        aria-checked={selectedScenario === scenario.id}
+                        key={scenario.id}
+                        onClick={() => setSelectedScenario(scenario.id)}
+                      >
+                        <span><strong>{scenario.name}</strong></span>
+                        <b>{scenario.difficulty}</b>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="scenario-brief" aria-live="polite">
+                    <span>{SCENARIOS[selectedScenario].description}</span>
+                    <small>{money(SCENARIOS[selectedScenario].startingMoney)} starting budget</small>
+                  </div>
+                  <div className="intro-actions">
+                    <button className="primary-button start-button" type="button" onClick={startGuidedRun}>Start guided run<span>→</span></button>
+                    <button className="secondary-button" type="button" onClick={startUnguidedRun}>Play without hints</button>
+                  </div>
+                </>
               )}
               <button className="intro-guide-button" type="button" onClick={() => setShowGuide(true)}>Read the architect’s field guide</button>
             </div>
