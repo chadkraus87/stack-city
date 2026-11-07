@@ -20,9 +20,11 @@ import type {
   RunEndReason,
   RunSummary,
   RunTelemetry,
+  ScenarioDefinition,
   ScenarioId,
   ServiceSignal,
   TelemetrySample,
+  WorkshopScenario,
 } from "./types.ts";
 import { BUILDING_KINDS } from "./types.ts";
 
@@ -97,14 +99,21 @@ const starterConnections: Connection[] = [
 export function createInitialState(
   scenario: ScenarioId = "growth",
   challengeSeed = DEFAULT_CHALLENGE_SEED,
+  workshop: WorkshopScenario | null = null,
 ): GameState {
-  const scenarioDefinition = SCENARIOS[scenario];
+  const safeWorkshop = workshop ? restoreWorkshopScenario(workshop) : null;
+  const selectedScenario = safeWorkshop?.template ?? scenario;
+  const scenarioDefinition = getScenarioDefinition({
+    scenario: selectedScenario,
+    workshop: safeWorkshop,
+  });
   const normalizedSeed = Number.isInteger(challengeSeed)
     ? Math.max(0, Math.min(0xffffffff, challengeSeed)) >>> 0
     : DEFAULT_CHALLENGE_SEED;
   const base: GameState = {
-    version: 4,
-    scenario,
+    version: 5,
+    scenario: selectedScenario,
+    workshop: safeWorkshop,
     challengeSeed: normalizedSeed,
     seed: normalizedSeed,
     tick: 0,
@@ -148,6 +157,24 @@ export function createInitialState(
     settings: { sound: true, reducedMotion: false, highContrast: false },
   };
   return { ...base, metrics: calculateMetrics(base) };
+}
+
+export function getScenarioDefinition(
+  state: Pick<GameState, "scenario" | "workshop">,
+): ScenarioDefinition {
+  if (!state.workshop) return SCENARIOS[state.scenario];
+  return {
+    id: state.workshop.template,
+    name: state.workshop.name,
+    difficulty: "Custom",
+    description: `${state.workshop.incidentDeck === "mixed" ? "Mixed" : state.workshop.incidentDeck} incident drill with local workshop constraints.`,
+    startingMoney: state.workshop.startingMoney,
+    baseTraffic: state.workshop.baseTraffic,
+    trafficGrowth: state.workshop.trafficGrowth,
+    waveTraffic: state.workshop.waveTraffic,
+    incidentRisk: state.workshop.incidentRisk,
+    revenueMultiplier: state.workshop.revenueMultiplier,
+  };
 }
 
 export function nextRandom(seed: number): [number, number] {
@@ -243,7 +270,7 @@ function sumCapacity(buildings: Building[], kind: BuildingKind): number {
 }
 
 export function calculateMetrics(state: GameState): Metrics {
-  const scenario = SCENARIOS[state.scenario];
+  const scenario = getScenarioDefinition(state);
   const connectedIds = connectedBuildingIds(state.buildings, state.connections);
   const criticalPath = findCriticalPath(state.buildings, state.connections);
   const criticalPathIds = new Set(criticalPath);
@@ -300,7 +327,9 @@ export function calculateMetrics(state: GameState): Metrics {
     : 0;
   const computeCapacity = Math.min(frontendCapacity, apiCapacity + asyncCapacity);
   const computeSaturation = computeCapacity > 0 ? traffic / computeCapacity : 2;
-  const autoscaleFactor = state.operations.autoscaling && computeCapacity > 0
+  const autoscaleFactor = state.operations.autoscaling
+    && state.workshop?.autoscalingAllowed !== false
+    && computeCapacity > 0
     ? Math.min(1.45, 1 + Math.max(0, computeSaturation - 0.7) * 0.72)
     : 1;
   const capacity = routeComplete
@@ -435,6 +464,7 @@ export function calculateMetrics(state: GameState): Metrics {
     const canaryFactor = state.release.status === "canary"
       && state.release.targetBuildingId === building.id ? 0.9 : 1;
     const elasticFactor = state.operations.autoscaling
+      && state.workshop?.autoscalingAllowed !== false
       && (building.kind === "frontend" || building.kind === "api" || building.kind === "worker")
       ? autoscaleFactor
       : 1;
@@ -561,16 +591,28 @@ function evaluateAchievements(state: GameState, metrics: Metrics): [Achievement[
   return [achievements, events];
 }
 
-function createIncident(state: GameState, random: number): Incident | null {
+export function createIncident(state: GameState, random: number): Incident | null {
   const connectedIds = connectedBuildingIds(state.buildings, state.connections);
+  const deck = state.workshop?.incidentDeck ?? "mixed";
+  const matchesDeck = (building: Building) => {
+    if (deck === "mixed") return true;
+    const category = BUILDINGS[building.kind].category;
+    if (deck === "compute") return category === "Compute";
+    if (deck === "data") return category === "Data";
+    return category === "Edge" || category === "Platform";
+  };
   const candidates = state.buildings.filter(
     (building) => connectedIds.has(building.id)
       && building.health > 20
+      && matchesDeck(building)
       && !state.incidents.some((incident) => incident.buildingId === building.id),
   );
   if (candidates.length === 0) return null;
   const building = candidates[Math.floor(random * candidates.length) % candidates.length];
-  const definition = INCIDENTS[(state.tick + Math.floor(random * 100)) % INCIDENTS.length];
+  const definitions = deck === "mixed"
+    ? INCIDENTS
+    : INCIDENTS.filter((definition) => definition.domain === deck);
+  const definition = definitions[(state.tick + Math.floor(random * 100)) % definitions.length];
   return {
     id: `incident-${state.tick}-${building.id}`,
     buildingId: building.id,
@@ -654,7 +696,7 @@ export function simulateTick(state: GameState): GameState {
   }
 
   const metricsBefore = calculateMetrics({ ...state, tick, incidents });
-  const scenario = SCENARIOS[state.scenario];
+  const scenario = getScenarioDefinition(state);
   const incidentInterval = Math.max(
     8,
     Math.round((24 - Math.min(6, state.wave) * 2) / scenario.incidentRisk),
@@ -936,13 +978,88 @@ const CODE_SCENARIOS: Record<string, ScenarioId> = {
   C: "chaos-lab",
 };
 
-function challengeChecksum(payload: string): string {
+const WORKSHOP_DECK_CODES = {
+  mixed: "M",
+  compute: "C",
+  data: "D",
+  network: "N",
+} as const;
+const CODE_WORKSHOP_DECKS = {
+  M: "mixed",
+  C: "compute",
+  D: "data",
+  N: "network",
+} as const;
+
+export const DEFAULT_WORKSHOP_SCENARIO: WorkshopScenario = {
+  version: 1,
+  name: "Capacity Crucible",
+  template: "growth",
+  startingMoney: 30_000,
+  baseTraffic: 50,
+  trafficGrowth: 0.2,
+  waveTraffic: 20,
+  incidentRisk: 1.2,
+  revenueMultiplier: 1,
+  maxBuildings: 24,
+  maxLevel: 4,
+  autoscalingAllowed: true,
+  incidentDeck: "mixed",
+};
+
+export function restoreWorkshopScenario(value: unknown): WorkshopScenario | null {
+  if (!isRecord(value)
+    || value.version !== 1
+    || !isSafeText(value.name, 32)
+    || value.name.trim().length === 0
+    || typeof value.template !== "string"
+    || !VALID_SCENARIOS.has(value.template)
+    || !isIntegerBetween(value.startingMoney, 12_000, 80_000)
+    || !isIntegerBetween(value.baseTraffic, 20, 120)
+    || !isFiniteBetween(value.trafficGrowth, 0.05, 0.6)
+    || Math.abs(value.trafficGrowth * 100 - Math.round(value.trafficGrowth * 100)) > 1e-9
+    || !isIntegerBetween(value.waveTraffic, 8, 60)
+    || !isFiniteBetween(value.incidentRisk, 0.5, 3)
+    || Math.abs(value.incidentRisk * 10 - Math.round(value.incidentRisk * 10)) > 1e-9
+    || !isFiniteBetween(value.revenueMultiplier, 0.6, 1.8)
+    || Math.abs(value.revenueMultiplier * 100 - Math.round(value.revenueMultiplier * 100)) > 1e-9
+    || !isIntegerBetween(value.maxBuildings, 4, 48)
+    || !isIntegerBetween(value.maxLevel, 1, 4)
+    || typeof value.autoscalingAllowed !== "boolean"
+    || (value.incidentDeck !== "mixed"
+      && value.incidentDeck !== "compute"
+      && value.incidentDeck !== "data"
+      && value.incidentDeck !== "network")) {
+    return null;
+  }
+  return {
+    version: 1,
+    name: value.name.trim(),
+    template: value.template as ScenarioId,
+    startingMoney: value.startingMoney,
+    baseTraffic: value.baseTraffic,
+    trafficGrowth: value.trafficGrowth,
+    waveTraffic: value.waveTraffic,
+    incidentRisk: value.incidentRisk,
+    revenueMultiplier: value.revenueMultiplier,
+    maxBuildings: value.maxBuildings,
+    maxLevel: value.maxLevel,
+    autoscalingAllowed: value.autoscalingAllowed,
+    incidentDeck: value.incidentDeck,
+  };
+}
+
+function challengeHash(payload: string): number {
   let hash = 2166136261;
   for (let index = 0; index < payload.length; index += 1) {
     hash ^= payload.charCodeAt(index);
     hash = Math.imul(hash, 16777619);
   }
-  return (hash >>> 0).toString(36).toUpperCase().padStart(6, "0").slice(-6);
+  return hash >>> 0;
+}
+
+function challengeChecksum(payload: string): string {
+  return challengeHash(payload).toString(36).toUpperCase().padStart(6, "0").slice(-6);
 }
 
 export function createChallengeCode(scenario: ScenarioId, seed: number): string {
@@ -968,6 +1085,91 @@ export function parseChallengeCode(
     return null;
   }
   return { scenario, seed };
+}
+
+export function createWorkshopCode(workshop: WorkshopScenario, seed: number): string {
+  const safe = restoreWorkshopScenario(workshop);
+  if (!safe) throw new Error("Cannot create a code from an invalid workshop scenario.");
+  const normalizedSeed = Math.max(0, Math.min(0xffffffff, Math.trunc(seed))) >>> 0;
+  const fields = [
+    SCENARIO_CODES[safe.template],
+    safe.startingMoney,
+    safe.baseTraffic,
+    Math.round(safe.trafficGrowth * 100),
+    safe.waveTraffic,
+    Math.round(safe.incidentRisk * 10),
+    Math.round(safe.revenueMultiplier * 100),
+    safe.maxBuildings,
+    safe.maxLevel,
+    Number(safe.autoscalingAllowed),
+    WORKSHOP_DECK_CODES[safe.incidentDeck],
+    normalizedSeed,
+  ].map((field) => typeof field === "number" ? field.toString(36).toUpperCase() : field);
+  const payload = fields.join("-");
+  return `SW1-${payload}-${challengeChecksum(payload)}`;
+}
+
+export function parseWorkshopCode(
+  value: string,
+): { workshop: WorkshopScenario; seed: number } | null {
+  const normalized = value.trim().toUpperCase();
+  if (normalized.length > 128) return null;
+  const match = /^SW1-([0-9A-Z-]+)-([0-9A-Z]{6})$/.exec(normalized);
+  if (!match || challengeChecksum(match[1]) !== match[2]) return null;
+  const fields = match[1].split("-");
+  if (fields.length !== 12) return null;
+  const template = CODE_SCENARIOS[fields[0]];
+  const incidentDeck = CODE_WORKSHOP_DECKS[fields[10] as keyof typeof CODE_WORKSHOP_DECKS];
+  const numbers = fields.slice(1, 10).map((field) => Number.parseInt(field, 36));
+  const seed = Number.parseInt(fields[11], 36);
+  if (!template
+    || !incidentDeck
+    || numbers.some((number) => !Number.isSafeInteger(number))
+    || !Number.isSafeInteger(seed)
+    || seed < 0
+    || seed > 0xffffffff) return null;
+  const [startingMoney, baseTraffic, trafficGrowth, waveTraffic, incidentRisk,
+    revenueMultiplier, maxBuildings, maxLevel, autoscalingAllowed] = numbers;
+  if (autoscalingAllowed !== 0 && autoscalingAllowed !== 1) return null;
+  const workshop = restoreWorkshopScenario({
+    version: 1,
+    name: `Imported ${incidentDeck === "mixed" ? "Mixed" : incidentDeck[0].toUpperCase() + incidentDeck.slice(1)} Drill`,
+    template,
+    startingMoney,
+    baseTraffic,
+    trafficGrowth: trafficGrowth / 100,
+    waveTraffic,
+    incidentRisk: incidentRisk / 10,
+    revenueMultiplier: revenueMultiplier / 100,
+    maxBuildings,
+    maxLevel,
+    autoscalingAllowed: autoscalingAllowed === 1,
+    incidentDeck,
+  });
+  return workshop ? { workshop, seed } : null;
+}
+
+export function createStateChallengeCode(
+  state: Pick<GameState, "scenario" | "challengeSeed" | "workshop">,
+): string {
+  return state.workshop
+    ? createWorkshopCode(state.workshop, state.challengeSeed)
+    : createChallengeCode(state.scenario, state.challengeSeed);
+}
+
+export function createDailyChallenge(date: string): {
+  date: string;
+  scenario: ScenarioId;
+  seed: number;
+  code: string;
+} | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  const parsed = new Date(`${date}T00:00:00.000Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date) return null;
+  const scenarios = Object.keys(SCENARIO_CODES) as ScenarioId[];
+  const seed = challengeHash(`stack-city-daily-${date}`);
+  const scenario = scenarios[seed % scenarios.length];
+  return { date, scenario, seed, code: createChallengeCode(scenario, seed) };
 }
 
 export function analyzeBottleneck(state: GameState): BottleneckAnalysis {
@@ -1167,8 +1369,9 @@ export function createRunSummary(
     endedAt: safeEndedAt,
     reason,
     scenario: state.scenario,
+    scenarioName: getScenarioDefinition(state).name,
     challengeSeed: state.challengeSeed,
-    challengeCode: createChallengeCode(state.scenario, state.challengeSeed),
+    challengeCode: createStateChallengeCode(state),
     durationTicks: state.tick,
     peakWave: state.wave,
     missionsCompleted: state.objectiveIndex,
@@ -1211,7 +1414,12 @@ function isSafeText(value: unknown, maximumLength: number): value is string {
     && value.length <= maximumLength
     && Array.from(value).every((character) => {
       const codePoint = character.codePointAt(0) ?? 0;
-      return codePoint >= 32 && codePoint !== 127;
+      return codePoint >= 32
+        && (codePoint < 127 || codePoint > 159)
+        && (codePoint < 0x200b || codePoint > 0x200f)
+        && (codePoint < 0x202a || codePoint > 0x202e)
+        && (codePoint < 0x2060 || codePoint > 0x206f)
+        && codePoint !== 0xfeff;
     });
 }
 
@@ -1307,7 +1515,8 @@ function restoreTelemetry(value: unknown, gameTick: number, legacyVersion = fals
  */
 export function restoreGameState(value: unknown): GameState | null {
   if (!isRecord(value)
-    || (value.version !== 1 && value.version !== 2 && value.version !== 3 && value.version !== 4)) return null;
+    || (value.version !== 1 && value.version !== 2 && value.version !== 3
+      && value.version !== 4 && value.version !== 5)) return null;
 
   const scenario = value.version === 1
     ? "growth"
@@ -1315,12 +1524,18 @@ export function restoreGameState(value: unknown): GameState | null {
       ? value.scenario as ScenarioId
       : null;
   if (!scenario) return null;
-  const challengeSeed = value.version === 3 || value.version === 4
+  const challengeSeed = value.version >= 3
     ? isIntegerBetween(value.challengeSeed, 0, 0xffffffff)
       ? value.challengeSeed
       : null
     : DEFAULT_CHALLENGE_SEED;
   if (challengeSeed === null) return null;
+  const workshop = value.version === 5 && value.workshop !== null
+    ? restoreWorkshopScenario(value.workshop)
+    : null;
+  if (value.version === 5
+    && ((value.workshop !== null && !workshop)
+      || (workshop && workshop.template !== scenario))) return null;
 
   if (!isIntegerBetween(value.seed, 0, 0xffffffff)
     || !isIntegerBetween(value.tick, 0, MAX_TICK)
@@ -1336,11 +1551,11 @@ export function restoreGameState(value: unknown): GameState | null {
     || !isIntegerBetween(value.objectiveIndex, 0, OBJECTIVES.length)
     || typeof value.tutorialComplete !== "boolean"
     || typeof value.gameOver !== "boolean"
-    || ((value.version === 3 || value.version === 4) && typeof value.reportRecorded !== "boolean")) {
+    || (value.version >= 3 && typeof value.reportRecorded !== "boolean")) {
     return null;
   }
 
-  if (value.version === 4 && (
+  if (value.version >= 4 && (
     !isRecord(value.operations)
     || (value.operations.retryPolicy !== "off"
       && value.operations.retryPolicy !== "bounded"
@@ -1357,8 +1572,13 @@ export function restoreGameState(value: unknown): GameState | null {
       && (typeof value.release.targetBuildingId !== "string"
         || !SAFE_ID.test(value.release.targetBuildingId)))
   )) return null;
+  if (value.version === 5
+    && workshop?.autoscalingAllowed === false
+    && (value.operations as Record<string, unknown>).autoscaling === true) return null;
 
-  if (!Array.isArray(value.buildings) || value.buildings.length > 48) return null;
+  const maxBuildings = workshop?.maxBuildings ?? 48;
+  const maxLevel = workshop?.maxLevel ?? 4;
+  if (!Array.isArray(value.buildings) || value.buildings.length > maxBuildings) return null;
   const buildings: Building[] = [];
   const buildingIds = new Set<string>();
   const occupiedCells = new Set<string>();
@@ -1371,7 +1591,7 @@ export function restoreGameState(value: unknown): GameState | null {
       || !VALID_BUILDING_KINDS.has(candidate.kind)
       || !isIntegerBetween(candidate.x, 0, 7)
       || !isIntegerBetween(candidate.y, 0, 5)
-      || !isIntegerBetween(candidate.level, 1, 4)
+      || !isIntegerBetween(candidate.level, 1, maxLevel)
       || !isFiniteBetween(candidate.health, 0, 100)) {
       return null;
     }
@@ -1512,7 +1732,7 @@ export function restoreGameState(value: unknown): GameState | null {
     return null;
   }
 
-  const telemetry = value.version === 3 || value.version === 4
+  const telemetry = value.version >= 3
     ? restoreTelemetry(value.telemetry, value.tick, value.version === 3)
     : {
       ...createEmptyTelemetry(),
@@ -1520,14 +1740,14 @@ export function restoreGameState(value: unknown): GameState | null {
     };
   if (!telemetry) return null;
 
-  const operations = value.version === 4
+  const operations = value.version >= 4
     ? {
       retryPolicy: (value.operations as Record<string, unknown>).retryPolicy as GameState["operations"]["retryPolicy"],
       circuitBreaker: (value.operations as Record<string, unknown>).circuitBreaker as boolean,
       autoscaling: (value.operations as Record<string, unknown>).autoscaling as boolean,
     }
     : { retryPolicy: "off" as const, circuitBreaker: false, autoscaling: false };
-  const release = value.version === 4
+  const release = value.version >= 4
     ? {
       status: (value.release as Record<string, unknown>).status as GameState["release"]["status"],
       targetBuildingId: (value.release as Record<string, unknown>).targetBuildingId as string | null,
@@ -1547,8 +1767,9 @@ export function restoreGameState(value: unknown): GameState | null {
   }
 
   const restored: GameState = {
-    version: 4,
+    version: 5,
     scenario,
+    workshop,
     challengeSeed,
     seed: value.seed,
     tick: value.tick,
@@ -1568,7 +1789,7 @@ export function restoreGameState(value: unknown): GameState | null {
     objectiveIndex: value.objectiveIndex,
     tutorialComplete: value.tutorialComplete,
     gameOver: value.gameOver,
-    reportRecorded: value.version === 3 || value.version === 4 ? value.reportRecorded as boolean : false,
+    reportRecorded: value.version >= 3 ? value.reportRecorded as boolean : false,
     metrics: { ...EMPTY_METRICS },
     telemetry,
     operations,
@@ -1583,7 +1804,7 @@ export function restoreGameState(value: unknown): GameState | null {
 }
 
 export function isValidGameState(value: unknown): value is GameState {
-  return isRecord(value) && value.version === 4 && restoreGameState(value) !== null;
+  return isRecord(value) && value.version === 5 && restoreGameState(value) !== null;
 }
 
 export function restoreRunHistory(value: unknown): RunSummary[] {
@@ -1595,8 +1816,21 @@ export function restoreRunHistory(value: unknown): RunSummary[] {
   const validReasons = new Set(["campaign", "failure", "manual"]);
   const validGrades = new Set(["S", "A", "B", "C", "D"]);
   for (const candidate of value.runs) {
-    if (!isRecord(candidate)
-      || typeof candidate.id !== "string"
+    if (!isRecord(candidate)) return [];
+    const workshopCode = typeof candidate.challengeCode === "string"
+      ? parseWorkshopCode(candidate.challengeCode)
+      : null;
+    const challengeIsValid = typeof candidate.scenario === "string"
+      && VALID_SCENARIOS.has(candidate.scenario)
+      && isIntegerBetween(candidate.challengeSeed, 0, 0xffffffff)
+      && typeof candidate.challengeCode === "string"
+      && candidate.challengeCode.length <= 128
+      && (candidate.challengeCode === createChallengeCode(
+        candidate.scenario as ScenarioId,
+        candidate.challengeSeed,
+      ) || (workshopCode?.workshop.template === candidate.scenario
+        && workshopCode.seed === candidate.challengeSeed));
+    if (typeof candidate.id !== "string"
       || !SAFE_ID.test(candidate.id)
       || ids.has(candidate.id)
       || !isIntegerBetween(candidate.endedAt, 0, 10_000_000_000_000)
@@ -1604,12 +1838,8 @@ export function restoreRunHistory(value: unknown): RunSummary[] {
       || !validReasons.has(candidate.reason)
       || typeof candidate.scenario !== "string"
       || !VALID_SCENARIOS.has(candidate.scenario)
-      || !isIntegerBetween(candidate.challengeSeed, 0, 0xffffffff)
-      || typeof candidate.challengeCode !== "string"
-      || candidate.challengeCode !== createChallengeCode(
-        candidate.scenario as ScenarioId,
-        candidate.challengeSeed,
-      )
+      || (candidate.scenarioName !== undefined && !isSafeText(candidate.scenarioName, 32))
+      || !challengeIsValid
       || !isIntegerBetween(candidate.durationTicks, 0, MAX_TICK)
       || !isIntegerBetween(candidate.peakWave, 1, 1_000_000)
       || !isIntegerBetween(candidate.missionsCompleted, 0, OBJECTIVES.length)
@@ -1631,8 +1861,11 @@ export function restoreRunHistory(value: unknown): RunSummary[] {
       endedAt: candidate.endedAt,
       reason: candidate.reason as RunSummary["reason"],
       scenario: candidate.scenario as ScenarioId,
-      challengeSeed: candidate.challengeSeed,
-      challengeCode: candidate.challengeCode,
+      scenarioName: typeof candidate.scenarioName === "string" && candidate.scenarioName.trim()
+        ? candidate.scenarioName.trim()
+        : SCENARIOS[candidate.scenario as ScenarioId].name,
+      challengeSeed: candidate.challengeSeed as number,
+      challengeCode: candidate.challengeCode as string,
       durationTicks: candidate.durationTicks,
       peakWave: candidate.peakWave,
       missionsCompleted: candidate.missionsCompleted,

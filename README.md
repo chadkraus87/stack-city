@@ -39,6 +39,8 @@ it on the map, and connects it to the API request path.
 - 13 infrastructure types across edge, compute, data, and platform layers
 - three operations scenarios with distinct budgets, traffic curves, revenue,
   and incident pressure
+- a campaign map, deterministic daily incident, and local Scenario Workshop
+- checksum-protected Workshop codes for sharing rules without sharing local titles
 - a deterministic simulation of traffic, capacity, saturation, latency,
   availability, errors, revenue, operating cost, and user satisfaction
 - building placement, network links, four upgrade levels, repairs, and resale
@@ -84,7 +86,19 @@ Settings panel can turn guided hints on or off at any time.
 Every new run also has a deterministic challenge code. Choose **New seed** to
 generate a different pressure profile, paste a friend’s code and choose **Load
 code** to replay it, or copy the current code without sending any game or player
-data. A code contains only the scenario and a checked 32-bit simulation seed.
+data. Standard codes contain only the scenario and a checked 32-bit simulation
+seed. Workshop codes contain bounded numeric rules, enum choices, and the seed;
+the local title is deliberately excluded.
+
+The campaign map adds two local-first ways to play:
+
+- **Daily incident** derives one reproducible scenario and seed from the local
+  calendar date. It does not contact a server.
+- **Scenario Workshop** lets you set budget, traffic, growth, wave size,
+  incident pressure, revenue, building and upgrade caps, autoscaling access,
+  and a compute, data, network, or mixed incident deck. Choose **Save & select
+  drill** to play it. Paste an `SW1` code in the Workshop to validate and import
+  another ruleset safely.
 
 ### 2. Read the current mission
 
@@ -245,13 +259,13 @@ capacity, caching, resilience, queues, observability, and SLOs.
 
 ## Saving, privacy, and accessibility
 
-Stack City stores one versioned active save and up to 12 compact run summaries
-in the browser's `localStorage`. This data never leaves the device, is treated
+Stack City stores one versioned active save, one optional Workshop draft, and up
+to 12 compact run summaries in the browser's `localStorage`. This data never leaves the device, is treated
 as untrusted input, and is validated before restoration. The parsers reject
 oversized payloads, invalid numeric ranges, duplicate IDs, overlapping
 buildings, forged connections, malformed events or telemetry, forged challenge
-codes, and unknown catalog data. Version 1, 2, and 3 saves migrate locally to
-the current version 4 schema; legacy links are oriented into a safe request
+codes, and unknown catalog data. Version 1, 2, 3, and 4 saves migrate locally to
+the current version 5 schema; legacy links are oriented into a safe request
 flow. Starting a new city replaces the active save but keeps
 the local runbook; browser site-data controls erase both.
 The review's **Clear history** control erases only archived summaries and leaves

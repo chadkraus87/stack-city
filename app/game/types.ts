@@ -16,6 +16,7 @@ export const BUILDING_KINDS = [
 
 export type BuildingKind = (typeof BUILDING_KINDS)[number];
 export type BuildingCategory = "Edge" | "Compute" | "Data" | "Platform";
+export type IncidentDomain = "mixed" | "compute" | "data" | "network";
 export type Severity = "warning" | "critical";
 export type GameSpeed = 0 | 1 | 2 | 4;
 export type ScenarioId = "growth" | "launch-day" | "chaos-lab";
@@ -25,7 +26,7 @@ export type ServiceStatus = "healthy" | "stressed" | "overloaded" | "incident" |
 export interface ScenarioDefinition {
   id: ScenarioId;
   name: string;
-  difficulty: "Standard" | "Advanced" | "Expert";
+  difficulty: "Standard" | "Advanced" | "Expert" | "Custom";
   description: string;
   startingMoney: number;
   baseTraffic: number;
@@ -33,6 +34,22 @@ export interface ScenarioDefinition {
   waveTraffic: number;
   incidentRisk: number;
   revenueMultiplier: number;
+}
+
+export interface WorkshopScenario {
+  version: 1;
+  name: string;
+  template: ScenarioId;
+  startingMoney: number;
+  baseTraffic: number;
+  trafficGrowth: number;
+  waveTraffic: number;
+  incidentRisk: number;
+  revenueMultiplier: number;
+  maxBuildings: number;
+  maxLevel: number;
+  autoscalingAllowed: boolean;
+  incidentDeck: IncidentDomain;
 }
 
 export interface BuildingDefinition {
@@ -204,6 +221,7 @@ export interface RunSummary {
   endedAt: number;
   reason: Exclude<RunEndReason, "live">;
   scenario: ScenarioId;
+  scenarioName: string;
   challengeSeed: number;
   challengeCode: string;
   durationTicks: number;
@@ -235,8 +253,9 @@ export interface GameSettings {
 }
 
 export interface GameState {
-  version: 4;
+  version: 5;
   scenario: ScenarioId;
+  workshop: WorkshopScenario | null;
   challengeSeed: number;
   seed: number;
   tick: number;

@@ -358,10 +358,10 @@ export const ACHIEVEMENT_CATALOG: Achievement[] = [
 ];
 
 export const INCIDENTS = [
-  { title: "CPU saturation", message: "A hot deployment is starving request workers.", severity: "warning" as const },
-  { title: "Dependency timeout", message: "Downstream calls are waiting past their deadline.", severity: "critical" as const },
-  { title: "Connection pool exhausted", message: "New data connections cannot be opened.", severity: "critical" as const },
-  { title: "Memory pressure", message: "Evictions and retries are increasing latency.", severity: "warning" as const },
-  { title: "Packet loss", message: "Intermittent network loss is forcing retries.", severity: "warning" as const },
-  { title: "Cache stampede", message: "Many requests are rebuilding the same expired value.", severity: "critical" as const },
+  { title: "CPU saturation", message: "A hot deployment is starving request workers.", severity: "warning" as const, domain: "compute" as const },
+  { title: "Dependency timeout", message: "Downstream calls are waiting past their deadline.", severity: "critical" as const, domain: "network" as const },
+  { title: "Connection pool exhausted", message: "New data connections cannot be opened.", severity: "critical" as const, domain: "data" as const },
+  { title: "Memory pressure", message: "Evictions and retries are increasing latency.", severity: "warning" as const, domain: "compute" as const },
+  { title: "Packet loss", message: "Intermittent network loss is forcing retries.", severity: "warning" as const, domain: "network" as const },
+  { title: "Cache stampede", message: "Many requests are rebuilding the same expired value.", severity: "critical" as const, domain: "data" as const },
 ];

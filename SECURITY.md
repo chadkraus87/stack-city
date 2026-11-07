@@ -18,14 +18,16 @@ made public.
 ## Data and trust boundaries
 
 Stack City has no accounts, analytics, database, uploads, or third-party API
-keys. Active game state and the compact 12-run history are stored only in the
-current browser's `localStorage`. Both payloads are independently size-limited
+keys. Active game state, one optional Workshop draft, and the compact 12-run
+history are stored only in the current browser's `localStorage`. The payloads are independently size-limited
 and structurally validated before restoration. Invalid saves or histories are
 discarded instead of partially trusted.
 
-Challenge codes contain only a public scenario identifier, a 32-bit simulation
-seed, and a checksum. They contain no save data, browser identifier, timestamp,
-account information, or personal data. Copying a code uses the browser
+Standard challenge codes contain only a public scenario identifier, a 32-bit
+simulation seed, and a checksum. Workshop codes additionally contain bounded
+numeric rules and enum choices. Free-form local titles are excluded. Codes
+contain no save data, browser identifier, timestamp, account information, or
+personal data. Copying a code uses the browser
 clipboard and does not make a network request.
 
 **Start a new city** replaces the active save but deliberately retains the
@@ -36,10 +38,11 @@ all Stack City data.
 Repository secrets and local deployment state must stay in ignored `.env*` and
 `.vercel/` paths. Never commit credentials or real user data.
 
-The version 4 save schema also validates retry controls, release progress,
-revision counters, per-run operations telemetry, and canary target eligibility.
-Legacy version 1–3 links are migrated into directed request flow; malformed
-current-version links or release state are discarded.
+The version 5 save schema also validates Workshop constraints and incident
+decks, retry controls, release progress, revision counters, per-run operations
+telemetry, and canary target eligibility. Legacy version 1–4 data migrates with
+safe defaults; version 1–3 links are migrated into directed request flow.
+Malformed current-version rules, links, or release state are discarded.
 
 ## Security controls
 
@@ -49,7 +52,7 @@ current-version links or release state are discarded.
 - The simulation renders typed React values and does not use raw HTML injection,
   dynamic code evaluation, uploads, remote content, or browser credentials.
 - Public challenge codes are length-bounded, checksummed, and contain no player
-  state or identity.
+  state, local title, or identity.
 - Dependencies are pinned in `package-lock.json`; the release gate includes
   lint, a production build, deterministic tests, rendered-output checks, and
   dependency audits.

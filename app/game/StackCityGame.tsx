@@ -16,8 +16,6 @@ import {
   GRID_ROWS,
   OBJECTIVES,
   RANKS,
-  SCENARIOS,
-  SCENARIO_LIST,
 } from "./catalog.ts";
 import {
   addManualAchievement,
@@ -25,19 +23,31 @@ import {
   calculateMetrics,
   connectedBuildingIds,
   createChallengeCode,
+  createDailyChallenge,
   createInitialState,
   createOperationsReport,
   createRunSummary,
+  createStateChallengeCode,
+  createWorkshopCode,
+  DEFAULT_WORKSHOP_SCENARIO,
+  getScenarioDefinition,
   incidentRepairCost,
   nextId,
   parseChallengeCode,
+  parseWorkshopCode,
   rollbackCanaryDeployment,
   resolveIncident,
   restoreGameState,
   restoreRunHistory,
+  restoreWorkshopScenario,
   simulateTick,
   startCanaryDeployment,
 } from "./engine.ts";
+import {
+  CampaignMap,
+  type CampaignSelection,
+  ScenarioWorkshop,
+} from "./ScenarioWorkshop.tsx";
 import type {
   Building,
   BuildingCategory,
@@ -49,13 +59,16 @@ import type {
   RetryPolicy,
   ScenarioId,
   ServiceSignal,
+  WorkshopScenario,
 } from "./types.ts";
 
-const SAVE_KEY = "stack-city-save-v4";
-const LEGACY_SAVE_KEYS = ["stack-city-save-v3", "stack-city-save-v2", "stack-city-save-v1"] as const;
+const SAVE_KEY = "stack-city-save-v5";
+const LEGACY_SAVE_KEYS = ["stack-city-save-v4", "stack-city-save-v3", "stack-city-save-v2", "stack-city-save-v1"] as const;
 const HISTORY_KEY = "stack-city-run-history-v1";
+const WORKSHOP_KEY = "stack-city-workshop-v1";
 const MAX_SAVE_BYTES = 250_000;
 const MAX_HISTORY_BYTES = 100_000;
+const MAX_WORKSHOP_BYTES = 5_000;
 const DEFAULT_CHALLENGE_SEED = 82491;
 const CONNECTION_COST = 250;
 const CATEGORIES: Array<BuildingCategory | "All"> = ["All", "Edge", "Compute", "Data", "Platform"];
@@ -201,6 +214,7 @@ function ReliabilityConsole({
   retryPolicy,
   circuitBreaker,
   autoscaling,
+  autoscalingAllowed,
   release,
   canaryTargets,
   canAffordCanary,
@@ -213,6 +227,7 @@ function ReliabilityConsole({
   retryPolicy: RetryPolicy;
   circuitBreaker: boolean;
   autoscaling: boolean;
+  autoscalingAllowed: boolean;
   release: GameState["release"];
   canaryTargets: ServiceSignal[];
   canAffordCanary: boolean;
@@ -239,8 +254,8 @@ function ReliabilityConsole({
       <button type="button" className={`policy-toggle ${circuitBreaker ? "active" : ""}`} aria-pressed={circuitBreaker} onClick={onToggleCircuitBreaker}>
         <span><strong>Circuit breaker</strong><small>Shed overload before failures cascade</small></span><b>{circuitBreaker ? "ARMED" : "OFF"}</b>
       </button>
-      <button type="button" className={`policy-toggle ${autoscaling ? "active" : ""}`} aria-pressed={autoscaling} onClick={onToggleAutoscaling}>
-        <span><strong>Compute autoscaler</strong><small>Rent burst capacity above 70% load</small></span><b>{autoscaling ? "READY" : "OFF"}</b>
+      <button type="button" className={`policy-toggle ${autoscaling ? "active" : ""}`} aria-pressed={autoscaling} disabled={!autoscalingAllowed} onClick={onToggleAutoscaling}>
+        <span><strong>Compute autoscaler</strong><small>{autoscalingAllowed ? "Rent burst capacity above 70% load" : "Disabled by this Workshop scenario"}</small></span><b>{!autoscalingAllowed ? "LOCKED" : autoscaling ? "READY" : "OFF"}</b>
       </button>
       {release.status === "canary" ? (
         <div className="canary-progress">
@@ -276,6 +291,7 @@ export function StackCityGame() {
   const [category, setCategory] = useState<BuildingCategory | "All">("All");
   const [showIntro, setShowIntro] = useState(true);
   const [showGuide, setShowGuide] = useState(false);
+  const [showWorkshop, setShowWorkshop] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showReset, setShowReset] = useState(false);
   const [showClearHistory, setShowClearHistory] = useState(false);
@@ -283,6 +299,10 @@ export function StackCityGame() {
   const [tourStep, setTourStep] = useState<number | null>(null);
   const [lastSavedTick, setLastSavedTick] = useState<number | null>(null);
   const [selectedScenario, setSelectedScenario] = useState<ScenarioId>("growth");
+  const [selectedWorkshop, setSelectedWorkshop] = useState<WorkshopScenario | null>(null);
+  const [workshopDraft, setWorkshopDraft] = useState<WorkshopScenario>(DEFAULT_WORKSHOP_SCENARIO);
+  const [campaignSelection, setCampaignSelection] = useState<CampaignSelection>("scenario:growth");
+  const [dailyChallenge, setDailyChallenge] = useState<ReturnType<typeof createDailyChallenge>>(null);
   const [selectedSeed, setSelectedSeed] = useState(DEFAULT_CHALLENGE_SEED);
   const [challengeInput, setChallengeInput] = useState(
     () => createChallengeCode("growth", DEFAULT_CHALLENGE_SEED),
@@ -327,8 +347,10 @@ export function StackCityGame() {
             const restored = withFreshMetrics({ ...restoredState, paused: true });
             setGame(restored);
             setSelectedScenario(restored.scenario);
+            setSelectedWorkshop(restored.workshop);
+            setCampaignSelection(restored.workshop ? "workshop" : `scenario:${restored.scenario}`);
             setSelectedSeed(restored.challengeSeed);
-            setChallengeInput(createChallengeCode(restored.scenario, restored.challengeSeed));
+            setChallengeInput(createStateChallengeCode(restored));
             setLastSavedTick(restored.tick);
             for (const key of LEGACY_SAVE_KEYS) window.localStorage.removeItem(key);
           } else {
@@ -350,7 +372,21 @@ export function StackCityGame() {
         }
       } catch {
         window.localStorage.removeItem(HISTORY_KEY);
+      }
+      try {
+        const rawWorkshop = window.localStorage.getItem(WORKSHOP_KEY);
+        if (rawWorkshop) {
+          if (rawWorkshop.length > MAX_WORKSHOP_BYTES) throw new Error("Workshop draft exceeds the safety limit.");
+          const restoredWorkshop = restoreWorkshopScenario(JSON.parse(rawWorkshop));
+          if (restoredWorkshop) setWorkshopDraft(restoredWorkshop);
+          else window.localStorage.removeItem(WORKSHOP_KEY);
+        }
+      } catch {
+        window.localStorage.removeItem(WORKSHOP_KEY);
       } finally {
+        const now = new Date();
+        const localDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+        setDailyChallenge(createDailyChallenge(localDate));
         setHydrated(true);
       }
     }, 0);
@@ -384,6 +420,17 @@ export function StackCityGame() {
   }, [hydrated, runHistory]);
 
   useEffect(() => {
+    if (!hydrated) return;
+    const safe = restoreWorkshopScenario(workshopDraft);
+    if (!safe) return;
+    try {
+      window.localStorage.setItem(WORKSHOP_KEY, JSON.stringify(safe));
+    } catch {
+      // A local draft is optional when browser storage is unavailable.
+    }
+  }, [hydrated, workshopDraft]);
+
+  useEffect(() => {
     if (game.paused || game.gameOver || showIntro || tourStep !== null) return;
     const timer = window.setInterval(() => {
       setGame((current) => {
@@ -399,12 +446,12 @@ export function StackCityGame() {
   useEffect(() => {
     const handleKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
-      if (target?.matches("input, textarea, select")) return;
       if (event.key === "Escape") {
         setBuildMode(null);
         setConnectFrom(null);
         setShowGuide(false);
         setShowSettings(false);
+        setShowWorkshop(false);
         if (showReport && !game.gameOver) {
           setShowReport(false);
           setGame((current) => ({ ...current, paused: !resumeAfterReportRef.current }));
@@ -413,7 +460,9 @@ export function StackCityGame() {
           setTourStep(null);
           setGame((current) => ({ ...current, paused: !resumeAfterTourRef.current }));
         }
+        return;
       }
+      if (target?.matches("input, textarea, select")) return;
       if (event.key.toLowerCase() === "p" && !showIntro && tourStep === null) {
         setGame((current) => ({ ...current, paused: !current.paused }));
       }
@@ -442,11 +491,21 @@ export function StackCityGame() {
   const visibleBuildings = BUILDING_LIST.filter(
     (definition) => category === "All" || definition.category === category,
   );
+  const buildingLimitReached = game.buildings.length >= (game.workshop?.maxBuildings ?? 48);
   const incidentBuildingIds = new Set(game.incidents.map((incident) => incident.buildingId));
   const unlockedAchievements = game.achievements.filter((achievement) => achievement.unlockedAt !== undefined);
   const saveStatus = lastSavedTick === game.tick ? "saved" : "saving";
-  const scenarioDefinition = SCENARIOS[game.scenario];
-  const challengeCode = createChallengeCode(game.scenario, game.challengeSeed);
+  const scenarioDefinition = getScenarioDefinition(game);
+  const selectedScenarioDefinition = getScenarioDefinition({
+    scenario: selectedWorkshop?.template ?? selectedScenario,
+    workshop: selectedWorkshop,
+  });
+  const selectedChallengeCode = selectedWorkshop
+    ? createWorkshopCode(selectedWorkshop, selectedSeed)
+    : createChallengeCode(selectedScenario, selectedSeed);
+  const challengeCode = createStateChallengeCode(game);
+  const maximumBuildings = game.workshop?.maxBuildings ?? GRID_COLUMNS * GRID_ROWS;
+  const maximumLevel = game.workshop?.maxLevel ?? 4;
   const operationsReport = useMemo(() => createOperationsReport(game), [game]);
   const canaryTargets = useMemo(
     () => game.metrics.serviceSignals.filter((signal) =>
@@ -493,6 +552,7 @@ export function StackCityGame() {
     const definition = BUILDINGS[kind];
     commit((current) => {
       if (current.rank < definition.unlockRank || current.money < definition.cost) return current;
+      if (current.workshop && current.buildings.length >= current.workshop.maxBuildings) return current;
       if (current.buildings.some((building) => building.x === x && building.y === y)) return current;
       const building: Building = {
         id: nextId(kind, current),
@@ -578,10 +638,13 @@ export function StackCityGame() {
   };
 
   const upgradeSelected = () => {
-    if (!selected || selected.level >= 4) return;
+    if (!selected || selected.level >= maximumLevel) return;
     const cost = calculateUpgradeCost(selected);
     commit((current) => {
       if (current.money < cost) return current;
+      const currentBuilding = current.buildings.find((building) => building.id === selected.id);
+      const currentMaximumLevel = current.workshop?.maxLevel ?? 4;
+      if (!currentBuilding || currentBuilding.level >= currentMaximumLevel) return current;
       return {
         ...current,
         money: current.money - cost,
@@ -674,7 +737,12 @@ export function StackCityGame() {
   const toggleAutoscaling = () => {
     commit((current) => ({
       ...current,
-      operations: { ...current.operations, autoscaling: !current.operations.autoscaling },
+      operations: {
+        ...current.operations,
+        autoscaling: current.workshop?.autoscalingAllowed === false
+          ? false
+          : !current.operations.autoscaling,
+      },
     }));
     playTone(680, 0.08);
   };
@@ -691,6 +759,8 @@ export function StackCityGame() {
 
   const chooseScenario = (scenario: ScenarioId) => {
     setSelectedScenario(scenario);
+    setSelectedWorkshop(null);
+    setCampaignSelection(`scenario:${scenario}`);
     setChallengeInput(createChallengeCode(scenario, selectedSeed));
     setChallengeError("");
   };
@@ -700,22 +770,61 @@ export function StackCityGame() {
     window.crypto.getRandomValues(values);
     const seed = values[0];
     setSelectedSeed(seed);
-    setChallengeInput(createChallengeCode(selectedScenario, seed));
+    if (!selectedWorkshop) setCampaignSelection(`scenario:${selectedScenario}`);
+    setChallengeInput(selectedWorkshop
+      ? createWorkshopCode(selectedWorkshop, seed)
+      : createChallengeCode(selectedScenario, seed));
     setChallengeError("");
     setCopyStatus("");
   };
 
   const applyChallenge = () => {
+    const parsedWorkshop = parseWorkshopCode(challengeInput);
+    if (parsedWorkshop) {
+      setWorkshopDraft(parsedWorkshop.workshop);
+      setSelectedWorkshop(parsedWorkshop.workshop);
+      setSelectedScenario(parsedWorkshop.workshop.template);
+      setSelectedSeed(parsedWorkshop.seed);
+      setCampaignSelection("workshop");
+      setChallengeInput(createWorkshopCode(parsedWorkshop.workshop, parsedWorkshop.seed));
+      setChallengeError("");
+      playTone(560, 0.08);
+      return;
+    }
     const parsed = parseChallengeCode(challengeInput);
     if (!parsed) {
       setChallengeError("That challenge code is invalid or incomplete.");
       return;
     }
     setSelectedScenario(parsed.scenario);
+    setSelectedWorkshop(null);
+    setCampaignSelection(`scenario:${parsed.scenario}`);
     setSelectedSeed(parsed.seed);
     setChallengeInput(createChallengeCode(parsed.scenario, parsed.seed));
     setChallengeError("");
     playTone(560, 0.08);
+  };
+
+  const selectDailyChallenge = () => {
+    if (!dailyChallenge) return;
+    setSelectedScenario(dailyChallenge.scenario);
+    setSelectedWorkshop(null);
+    setSelectedSeed(dailyChallenge.seed);
+    setCampaignSelection("daily");
+    setChallengeInput(dailyChallenge.code);
+    setChallengeError("");
+  };
+
+  const selectWorkshop = (workshop: WorkshopScenario, seed: number) => {
+    setWorkshopDraft(workshop);
+    setSelectedWorkshop(workshop);
+    setSelectedScenario(workshop.template);
+    setSelectedSeed(seed);
+    setCampaignSelection("workshop");
+    setChallengeInput(createWorkshopCode(workshop, seed));
+    setChallengeError("");
+    setShowWorkshop(false);
+    playTone(600, 0.08);
   };
 
   const copyChallenge = async (code: string) => {
@@ -749,7 +858,7 @@ export function StackCityGame() {
   };
 
   const startGuidedRun = () => {
-    const fresh = createInitialState(selectedScenario, selectedSeed);
+    const fresh = createInitialState(selectedScenario, selectedSeed, selectedWorkshop);
     resumeAfterTourRef.current = true;
     setShowIntro(false);
     setShowGuide(false);
@@ -768,7 +877,7 @@ export function StackCityGame() {
   };
 
   const startUnguidedRun = () => {
-    const fresh = createInitialState(selectedScenario, selectedSeed);
+    const fresh = createInitialState(selectedScenario, selectedSeed, selectedWorkshop);
     setShowIntro(false);
     setShowReport(false);
     setGame({ ...fresh, paused: false, tutorialComplete: true });
@@ -802,6 +911,8 @@ export function StackCityGame() {
     for (const key of LEGACY_SAVE_KEYS) window.localStorage.removeItem(key);
     setGame(fresh);
     setSelectedScenario("growth");
+    setSelectedWorkshop(null);
+    setCampaignSelection("scenario:growth");
     setSelectedSeed(DEFAULT_CHALLENGE_SEED);
     setChallengeInput(createChallengeCode("growth", DEFAULT_CHALLENGE_SEED));
     setChallengeError("");
@@ -930,15 +1041,15 @@ export function StackCityGame() {
                     setConnectFrom(null);
                     playTone(430);
                   }}
-                  disabled={locked}
+                  disabled={locked || buildingLimitReached}
                   aria-pressed={buildMode === definition.kind}
                 >
                   <span className="catalog-icon" style={{ "--building-color": definition.color } as CSSProperties}>{definition.code}</span>
                   <span className="catalog-copy">
                     <strong>{definition.name}</strong>
-                    <small>{locked ? `Unlocks at rank ${definition.unlockRank}` : definition.role}</small>
+                    <small>{locked ? `Unlocks at rank ${definition.unlockRank}` : buildingLimitReached ? `Scenario limit of ${maximumBuildings} buildings reached` : definition.role}</small>
                   </span>
-                  <span className={`catalog-price ${unaffordable && !locked ? "unaffordable" : ""}`}>{locked ? "LOCKED" : money(definition.cost)}</span>
+                  <span className={`catalog-price ${unaffordable && !locked ? "unaffordable" : ""}`}>{locked ? "LOCKED" : buildingLimitReached ? "LIMIT" : money(definition.cost)}</span>
                 </button>
               );
             })}
@@ -1123,6 +1234,7 @@ export function StackCityGame() {
             retryPolicy={game.operations.retryPolicy}
             circuitBreaker={game.operations.circuitBreaker}
             autoscaling={game.operations.autoscaling}
+            autoscalingAllowed={game.workshop?.autoscalingAllowed !== false}
             release={game.release}
             canaryTargets={canaryTargets}
             canAffordCanary={game.money >= 1_200}
@@ -1144,7 +1256,7 @@ export function StackCityGame() {
               <>
                 <p className="inspector-role">{selectedDefinition.description}</p>
                 <div className="inspector-stats">
-                  <div><span>Level</span><strong>{selected.level} / 4</strong></div>
+                  <div><span>Level</span><strong>{selected.level} / {maximumLevel}</strong></div>
                   <div><span>Health</span><strong>{Math.round(selected.health)}%</strong></div>
                   <div><span>Capacity</span><strong>{Math.round(buildingCapacity(selected))}</strong></div>
                   <div><span>Network</span><strong className={connected.has(selected.id) ? "metric-good" : "metric-bad"}>{connected.has(selected.id) ? "Reachable" : "No ingress"}</strong></div>
@@ -1155,8 +1267,8 @@ export function StackCityGame() {
                   <button type="button" className={connectFrom === selected.id ? "active" : ""} onClick={() => { setConnectFrom((current) => current === selected.id ? null : selected.id); setBuildMode(null); }}>
                     {connectFrom === selected.id ? "Cancel link" : "Connect"} · {money(CONNECTION_COST)}
                   </button>
-                  <button type="button" onClick={upgradeSelected} disabled={selected.level >= 4 || game.money < calculateUpgradeCost(selected)}>
-                    {selected.level >= 4 ? "Max level" : `Upgrade · ${money(calculateUpgradeCost(selected))}`}
+                  <button type="button" onClick={upgradeSelected} disabled={selected.level >= maximumLevel || game.money < calculateUpgradeCost(selected)}>
+                    {selected.level >= maximumLevel ? "Max level" : `Upgrade · ${money(calculateUpgradeCost(selected))}`}
                   </button>
                 </div>
                 <details className="concept-note">
@@ -1214,7 +1326,17 @@ export function StackCityGame() {
         </div>
       )}
 
-      {showIntro && !game.gameOver && (
+      {showWorkshop && (
+        <ScenarioWorkshop
+          initialDraft={selectedWorkshop ?? workshopDraft}
+          seed={selectedSeed}
+          onDraftChange={setWorkshopDraft}
+          onSelect={selectWorkshop}
+          onClose={() => setShowWorkshop(false)}
+        />
+      )}
+
+      {showIntro && !game.gameOver && !showWorkshop && (
         <div className="modal-backdrop">
           <section className="intro-modal" role="dialog" aria-modal="true" aria-labelledby="intro-title">
             <div className="intro-visual" aria-hidden="true">
@@ -1243,33 +1365,23 @@ export function StackCityGame() {
                 </div>
               ) : (
                 <>
-                  <div className="scenario-picker" role="radiogroup" aria-labelledby="scenario-picker-title">
-                    <div className="scenario-picker-heading">
-                      <span className="eyebrow" id="scenario-picker-title">Choose an operations drill</span>
-                      <small>{SCENARIOS[selectedScenario].difficulty}</small>
-                    </div>
-                    {SCENARIO_LIST.map((scenario) => (
-                      <button
-                        className={selectedScenario === scenario.id ? "selected" : ""}
-                        type="button"
-                        role="radio"
-                        aria-checked={selectedScenario === scenario.id}
-                        key={scenario.id}
-                        onClick={() => chooseScenario(scenario.id)}
-                      >
-                        <span><strong>{scenario.name}</strong></span>
-                        <b>{scenario.difficulty}</b>
-                      </button>
-                    ))}
-                  </div>
+                  <CampaignMap
+                    selection={campaignSelection}
+                    daily={dailyChallenge}
+                    workshop={selectedWorkshop}
+                    history={runHistory}
+                    onScenario={chooseScenario}
+                    onDaily={selectDailyChallenge}
+                    onWorkshop={() => setShowWorkshop(true)}
+                  />
                   <div className="scenario-brief" aria-live="polite">
-                    <span>{SCENARIOS[selectedScenario].description}</span>
-                    <small>{money(SCENARIOS[selectedScenario].startingMoney)} starting budget</small>
+                    <span>{selectedScenarioDefinition.description}</span>
+                    <small>{money(selectedScenarioDefinition.startingMoney)} starting budget{selectedWorkshop ? ` · ${selectedWorkshop.maxBuildings} buildings · level ${selectedWorkshop.maxLevel} cap` : ""}</small>
                   </div>
                   <form className="challenge-builder" onSubmit={(event) => { event.preventDefault(); applyChallenge(); }}>
                     <div>
                       <label htmlFor="challenge-code">Deterministic challenge code</label>
-                      <span>Same scenario and seed, same production pressure. Stored and shared without player data.</span>
+                      <span>Replayable rules and seed, same production pressure. Stored and shared without player data or local titles.</span>
                     </div>
                     <div className="challenge-input-row">
                       <input
@@ -1279,15 +1391,15 @@ export function StackCityGame() {
                         aria-invalid={challengeError ? "true" : "false"}
                         aria-describedby="challenge-help"
                         autoComplete="off"
-                        maxLength={32}
+                        maxLength={128}
                         spellCheck={false}
                       />
                       <button type="submit">Load code</button>
                       <button type="button" onClick={generateChallenge}>New seed</button>
                     </div>
                     <div className="challenge-helper" id="challenge-help" aria-live="polite">
-                      <span className={challengeError ? "challenge-error" : ""}>{challengeError || createChallengeCode(selectedScenario, selectedSeed)}</span>
-                      <button type="button" onClick={() => void copyChallenge(createChallengeCode(selectedScenario, selectedSeed))}>Copy</button>
+                      <span className={challengeError ? "challenge-error" : ""}>{challengeError || selectedChallengeCode}</span>
+                      <button type="button" onClick={() => void copyChallenge(selectedChallengeCode)}>Copy</button>
                     </div>
                   </form>
                   <div className="intro-actions">
@@ -1391,7 +1503,7 @@ export function StackCityGame() {
                 <span className="eyebrow">Replay this pressure profile</span>
                 <code>{challengeCode}</code>
                 <button type="button" onClick={() => void copyChallenge(challengeCode)}>Copy challenge code</button>
-                <small aria-live="polite">{copyStatus || "Code contains only scenario and seed."}</small>
+                <small aria-live="polite">{copyStatus || "Code contains only bounded game rules and seed."}</small>
               </div>
             </div>
 
@@ -1445,7 +1557,7 @@ export function StackCityGame() {
                   {runHistory.slice(0, 5).map((summary) => (
                     <li key={summary.id}>
                       <span className={`history-grade grade-${summary.grade.toLowerCase()}`}>{summary.grade}</span>
-                      <span><strong>{SCENARIOS[summary.scenario].name}</strong><small>{summary.reason === "campaign" ? "Campaign complete" : summary.reason === "failure" ? "Outage" : "Run retired"} · {elapsed(summary.durationTicks)}</small></span>
+                      <span><strong>{summary.scenarioName}</strong><small>{summary.reason === "campaign" ? "Campaign complete" : summary.reason === "failure" ? "Outage" : "Run retired"} · {elapsed(summary.durationTicks)}</small></span>
                       <span><strong>{summary.score}</strong><small>score</small></span>
                       <span><strong>{summary.incidentCount}</strong><small>incidents</small></span>
                       <code>{summary.challengeCode}</code>
@@ -1455,7 +1567,7 @@ export function StackCityGame() {
               ) : (
                 <p className="empty-history">Complete the campaign, lose the city, or start over to archive the first summary.</p>
               )}
-              <p className="privacy-note">Run summaries never leave this browser. Challenge codes contain only the scenario and deterministic simulation seed.</p>
+              <p className="privacy-note">Run summaries never leave this browser. Codes contain only bounded simulation rules and a deterministic seed; local Workshop titles are excluded.</p>
             </section>
 
             <footer className="report-actions">

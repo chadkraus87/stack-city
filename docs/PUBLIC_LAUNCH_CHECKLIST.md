@@ -13,7 +13,9 @@ The current build is intentionally low-data:
 - no account, profile, email, upload, chat, leaderboard, advertising, analytics,
   payment, or application database;
 - game saves and 12 compact run summaries remain in browser local storage;
-- public challenge codes carry only a scenario, deterministic seed, and checksum;
+- public challenge codes carry only a scenario, deterministic seed, checksum,
+  and, for Workshop drills, bounded gameplay rules; free-form local titles and
+  saved player state are excluded;
 - a statically rendered Legal & Trust Center explains the current data flow,
   terms, children's privacy posture, accessibility target, and report channels;
 - Vercel receives ordinary hosting request data under its own privacy notice;

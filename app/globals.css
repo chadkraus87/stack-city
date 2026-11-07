@@ -3580,6 +3580,223 @@ kbd {
 
 .legal-footer a { color: var(--acid); text-decoration: none; }
 
+.campaign-map {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 9px;
+}
+
+.campaign-map-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.campaign-map-heading h3 {
+  margin-top: 3px;
+  font-family: var(--font-display);
+  font-size: 13px;
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+}
+
+.campaign-map-heading > small {
+  color: var(--muted);
+  font-family: var(--font-code);
+  font-size: 7px;
+  text-transform: uppercase;
+}
+
+.campaign-route {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.campaign-node {
+  display: grid;
+  min-height: 66px;
+  grid-column: span 2;
+  grid-template-columns: 25px 1fr;
+  gap: 4px 7px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: #080e13;
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+}
+
+.campaign-node.daily,
+.campaign-node.workshop { grid-column: span 3; }
+
+.campaign-node:hover:not(:disabled) { border-color: var(--line-strong); }
+
+.campaign-node.selected {
+  border-color: rgba(184, 247, 82, 0.58);
+  background: rgba(184, 247, 82, 0.07);
+  box-shadow: inset 2px 0 var(--acid);
+}
+
+.campaign-node:disabled { cursor: wait; opacity: 0.6; }
+
+.campaign-node-index {
+  grid-row: 1 / 3;
+  color: var(--cyan);
+  font-family: var(--font-code);
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.campaign-node > span:nth-child(2) { display: grid; gap: 2px; }
+.campaign-node strong { font-family: var(--font-display); font-size: 11px; text-transform: uppercase; }
+.campaign-node small,
+.campaign-node b { color: var(--muted); font-family: var(--font-code); font-size: 6px; text-transform: uppercase; }
+.campaign-node b { grid-column: 2; color: var(--muted-bright); }
+.campaign-node.selected strong,
+.campaign-node.selected b { color: var(--acid); }
+
+.workshop-backdrop { z-index: 130; }
+
+.workshop-modal {
+  width: min(1080px, 100%);
+  max-height: calc(100dvh - 48px);
+  overflow-y: auto;
+  border: 1px solid #2b4549;
+  background: #091116;
+  box-shadow: 0 35px 120px rgba(0, 0, 0, 0.78);
+}
+
+.workshop-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 24px 27px;
+  border-bottom: 1px solid var(--line);
+}
+
+.workshop-header h2 {
+  margin-top: 6px;
+  font-family: var(--font-display);
+  font-size: 30px;
+  text-transform: uppercase;
+}
+
+.workshop-header p,
+.workshop-import p {
+  margin-top: 6px;
+  color: var(--muted-bright);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.workshop-layout { display: grid; grid-template-columns: minmax(0, 1fr) 290px; }
+
+.workshop-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  padding: 25px 27px 28px;
+}
+
+.workshop-field { display: grid; align-content: start; gap: 6px; }
+.workshop-field.wide,
+.workshop-check.wide,
+.workshop-summary.wide,
+.workshop-actions.wide { grid-column: 1 / -1; }
+
+.workshop-field label,
+.workshop-import label,
+.workshop-summary > span {
+  color: var(--muted-bright);
+  font-family: var(--font-code);
+  font-size: 7px;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.workshop-field input,
+.workshop-field select,
+.workshop-import textarea {
+  width: 100%;
+  min-height: 42px;
+  padding: 9px 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  outline: none;
+  background: #060d12;
+  color: var(--ink);
+  font: 10px var(--font-code);
+}
+
+.workshop-field input:focus,
+.workshop-field select:focus,
+.workshop-import textarea:focus {
+  border-color: var(--cyan);
+  box-shadow: 0 0 0 2px rgba(102, 229, 255, 0.1);
+}
+
+.workshop-field input:invalid { border-color: var(--red); }
+.workshop-field small { color: var(--muted); font-size: 8px; }
+
+.workshop-check {
+  display: flex;
+  min-height: 50px;
+  align-items: center;
+  gap: 11px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  cursor: pointer;
+}
+
+.workshop-check input { width: 18px; height: 18px; accent-color: var(--acid); }
+.workshop-check span { display: grid; gap: 3px; }
+.workshop-check label { font: 800 8px var(--font-code); text-transform: uppercase; }
+.workshop-check small { color: var(--muted); font-size: 8px; }
+
+.workshop-summary {
+  display: grid;
+  gap: 7px;
+  padding: 12px;
+  border: 1px solid rgba(102, 229, 255, 0.18);
+  background: rgba(102, 229, 255, 0.035);
+}
+
+.workshop-summary code {
+  overflow-wrap: anywhere;
+  color: var(--cyan);
+  font: 8px/1.5 var(--font-code);
+}
+
+.workshop-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+.workshop-import {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 25px;
+  border-left: 1px solid var(--line);
+  background: rgba(3, 9, 13, 0.46);
+}
+
+.workshop-import h3 { font-family: var(--font-display); font-size: 17px; text-transform: uppercase; }
+.workshop-import textarea { min-height: 112px; resize: vertical; color: var(--cyan); line-height: 1.5; }
+.workshop-import button {
+  min-height: 42px;
+  border: 1px solid var(--cyan);
+  border-radius: 3px;
+  background: rgba(102, 229, 255, 0.08);
+  color: var(--cyan);
+  cursor: pointer;
+  font: 800 8px var(--font-code);
+  text-transform: uppercase;
+}
+.workshop-import > small { color: var(--muted); font-size: 8px; line-height: 1.5; }
+
 .high-contrast {
   --muted: #a9b9b6;
   --line: #3d5057;
@@ -3703,11 +3920,26 @@ kbd {
   .intro-features { margin-block: 18px; }
   .scenario-picker { grid-template-columns: 1fr; }
   .scenario-picker button { min-height: 46px; align-items: center; flex-direction: row; }
+  .campaign-map-heading { align-items: flex-start; flex-direction: column; gap: 5px; }
+  .campaign-route { grid-template-columns: 1fr; }
+  .campaign-node,
+  .campaign-node.daily,
+  .campaign-node.workshop { min-height: 58px; grid-column: 1; }
   .scenario-brief { align-items: flex-start; flex-direction: column; gap: 4px; }
   .challenge-builder > div:first-child { flex-direction: column; gap: 5px; }
   .challenge-builder > div:first-child span { max-width: none; text-align: left; }
   .challenge-input-row { grid-template-columns: 1fr 1fr; }
   .challenge-input-row input { grid-column: 1 / -1; }
+  .workshop-backdrop { padding: 12px; }
+  .workshop-modal { max-height: calc(100dvh - 24px); }
+  .workshop-header { padding: 20px; }
+  .workshop-layout { grid-template-columns: 1fr; }
+  .workshop-form { grid-template-columns: 1fr; padding: 20px; }
+  .workshop-field.wide,
+  .workshop-check.wide,
+  .workshop-summary.wide,
+  .workshop-actions.wide { grid-column: 1; }
+  .workshop-import { padding: 20px; border-top: 1px solid var(--line); border-left: 0; }
   .operations-report { max-height: calc(100dvh - 24px); }
   .report-backdrop { padding: 12px; }
   .report-header { min-height: 75px; padding: 15px 17px; }

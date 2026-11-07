@@ -4,19 +4,25 @@ import {
   analyzeBottleneck,
   calculateMetrics,
   createChallengeCode,
+  createDailyChallenge,
+  createIncident,
   createInitialState,
   createOperationsReport,
   createRunSummary,
+  createWorkshopCode,
+  DEFAULT_WORKSHOP_SCENARIO,
   isValidGameState,
   parseChallengeCode,
+  parseWorkshopCode,
   resolveIncident,
   rollbackCanaryDeployment,
   restoreGameState,
   restoreRunHistory,
+  restoreWorkshopScenario,
   simulateTick,
   startCanaryDeployment,
 } from "../app/game/engine.ts";
-import type { Building, Connection, GameState, Incident } from "../app/game/types.ts";
+import type { Building, Connection, GameState, Incident, WorkshopScenario } from "../app/game/types.ts";
 
 function connectedState(extraBuildings: Building[], extraConnections: Connection[]): GameState {
   const state = createInitialState();
@@ -253,6 +259,68 @@ test("challenge codes round-trip a scenario and deterministic 32-bit seed", () =
   assert.equal(seeded.seed, 123456789);
 });
 
+test("Workshop codes round-trip bounded rules without exposing the local title", () => {
+  const workshop: WorkshopScenario = {
+    ...DEFAULT_WORKSHOP_SCENARIO,
+    name: "Chad's private rehearsal",
+    template: "launch-day",
+    incidentDeck: "data",
+    autoscalingAllowed: false,
+    maxBuildings: 14,
+    maxLevel: 3,
+  };
+  const code = createWorkshopCode(workshop, 0xabcdef01);
+  const parsed = parseWorkshopCode(code.toLowerCase());
+
+  assert.match(code, /^SW1-[0-9A-Z-]+-[0-9A-Z]{6}$/);
+  assert.equal(code.includes("CHAD"), false);
+  assert.ok(parsed);
+  assert.equal(parsed.seed, 0xabcdef01);
+  assert.deepEqual(
+    { ...parsed.workshop, name: workshop.name },
+    workshop,
+  );
+  assert.equal(parseWorkshopCode(`${code.slice(0, -1)}X`), null);
+  assert.equal(restoreWorkshopScenario({ ...workshop, maxBuildings: 500 }), null);
+  assert.equal(restoreWorkshopScenario({ ...workshop, name: "Safe\u202Etxt.exe" }), null);
+});
+
+test("custom scenarios change deterministic pressure and enforce incident domains", () => {
+  const workshop: WorkshopScenario = {
+    ...DEFAULT_WORKSHOP_SCENARIO,
+    name: "Data duty",
+    template: "growth",
+    startingMoney: 42_000,
+    baseTraffic: 92,
+    incidentDeck: "data",
+  };
+  const first = createInitialState("growth", 9191, workshop);
+  const second = createInitialState("growth", 9191, workshop);
+  const incident = createIncident(first, 0.4);
+
+  assert.equal(first.version, 5);
+  assert.equal(first.money, 42_000);
+  assert.equal(first.metrics.traffic, 92);
+  assert.deepEqual(first, second);
+  assert.ok(incident);
+  assert.equal(first.buildings.find((building) => building.id === incident.buildingId)?.kind, "database");
+  assert.match(incident.title, /Connection pool|Cache stampede/);
+});
+
+test("daily challenges are stable per valid calendar date", () => {
+  const first = createDailyChallenge("2026-10-23");
+  const second = createDailyChallenge("2026-10-23");
+
+  assert.deepEqual(first, second);
+  assert.ok(first);
+  assert.deepEqual(parseChallengeCode(first.code), {
+    scenario: first.scenario,
+    seed: first.seed,
+  });
+  assert.equal(createDailyChallenge("2026-02-31"), null);
+  assert.equal(createDailyChallenge("tomorrow"), null);
+});
+
 test("telemetry records SLOs, costs, peaks, and bounded architecture samples", () => {
   let state = { ...createInitialState("launch-day", 9173), paused: false };
   for (let index = 0; index < 3000; index += 1) state = simulateTick(state);
@@ -349,6 +417,23 @@ test("save validation accepts current state and rejects malformed input", () => 
     ...createInitialState(),
     release: { status: "canary", targetBuildingId: "db-1", progress: 150, revision: -1 },
   }), false);
+  const constrained = createInitialState("growth", 44, {
+    ...DEFAULT_WORKSHOP_SCENARIO,
+    name: "Manual scale",
+    maxBuildings: 4,
+    maxLevel: 1,
+    autoscalingAllowed: false,
+  });
+  assert.equal(isValidGameState({
+    ...constrained,
+    operations: { ...constrained.operations, autoscaling: true },
+  }), false);
+  assert.equal(isValidGameState({
+    ...constrained,
+    buildings: constrained.buildings.map((building, index) => index === 0
+      ? { ...building, level: 2 }
+      : building),
+  }), false);
 });
 
 test("version 1 saves migrate safely to the current growth scenario", () => {
@@ -359,7 +444,8 @@ test("version 1 saves migrate safely to the current growth scenario", () => {
   const restored = restoreGameState(legacy);
 
   assert.ok(restored);
-  assert.equal(restored.version, 4);
+  assert.equal(restored.version, 5);
+  assert.equal(restored.workshop, null);
   assert.equal(restored.scenario, "growth");
   assert.equal(restored.challengeSeed, 82491);
   assert.equal(restored.telemetry.sampleCount, 0);
@@ -376,7 +462,8 @@ test("version 2 saves migrate without trusting missing telemetry", () => {
   const restored = restoreGameState(legacy);
 
   assert.ok(restored);
-  assert.equal(restored.version, 4);
+  assert.equal(restored.version, 5);
+  assert.equal(restored.workshop, null);
   assert.equal(restored.scenario, "launch-day");
   assert.equal(restored.challengeSeed, 82491);
   assert.equal(restored.telemetry.sampleCount, 0);
@@ -399,7 +486,8 @@ test("version 3 saves gain safe operations defaults and directed links", () => {
   const restored = restoreGameState(legacy);
 
   assert.ok(restored);
-  assert.equal(restored.version, 4);
+  assert.equal(restored.version, 5);
+  assert.equal(restored.workshop, null);
   assert.deepEqual(restored.operations, {
     retryPolicy: "off",
     circuitBreaker: false,
@@ -412,4 +500,18 @@ test("version 3 saves gain safe operations defaults and directed links", () => {
     ["web-1", "api-1"],
     ["api-1", "db-1"],
   ]);
+});
+
+test("version 4 saves gain an empty Workshop boundary", () => {
+  const current = createInitialState("chaos-lab", 9001);
+  const legacy: Record<string, unknown> = { ...current, version: 4 };
+  delete legacy.workshop;
+
+  const restored = restoreGameState(legacy);
+
+  assert.ok(restored);
+  assert.equal(restored.version, 5);
+  assert.equal(restored.workshop, null);
+  assert.equal(restored.scenario, "chaos-lab");
+  assert.equal(restored.challengeSeed, 9001);
 });

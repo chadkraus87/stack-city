@@ -7,7 +7,7 @@ export const metadata: Metadata = {
   alternates: { canonical: "/legal" },
 };
 
-const EFFECTIVE_DATE = "September 9, 2026";
+const EFFECTIVE_DATE = "October 23, 2026";
 
 export default function LegalPage() {
   return (
@@ -50,10 +50,13 @@ export default function LegalPage() {
             <h2>Data stays minimal by design</h2>
             <h3>Information Stack City stores</h3>
             <p>
-              The game stores an active save, preferences, and up to 12 after-action summaries in
-              your browser&apos;s local storage. This information remains on that device and is not
-              transmitted to the operator. Challenge codes contain only a scenario identifier,
-              deterministic simulation seed, and integrity checksum.
+              The game stores an active save, preferences, one optional Scenario Workshop draft,
+              and up to 12 after-action summaries in your browser&apos;s local storage. This
+              information remains on that device and is not transmitted to the operator. Standard
+              challenge codes contain only a scenario identifier, deterministic simulation seed,
+              and integrity checksum. Workshop codes may also contain bounded game settings such
+              as traffic, budget, limits, and incident type. A Workshop&apos;s free-form local title is
+              never included in its share code.
             </p>
             <h3>Hosting information</h3>
             <p>
@@ -72,7 +75,7 @@ export default function LegalPage() {
             <h3>Your choices</h3>
             <p>
               Use <strong>Clear history</strong> in Run Review to remove archived summaries. Clear
-              this site&apos;s browser storage to remove both the active save and summaries. Because
+              this site&apos;s browser storage to remove the active save, Workshop draft, and summaries. Because
               Stack City does not receive those records, the operator cannot access, export, or
               delete them remotely.
             </p>

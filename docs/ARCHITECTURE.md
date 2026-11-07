@@ -16,9 +16,16 @@ Core capacity is the lowest supported layer among frontend, API, and database.
 Optional services modify that model: a CDN offloads frontend traffic, caches
 reduce database demand, load balancers make replicated APIs useful, queues and
 workers absorb asynchronous bursts, and monitoring reduces incident impact.
-Scenario definitions remain centralized in the catalog and change only input
+Built-in scenario definitions remain centralized in the catalog and change only input
 pressure—starting budget, base demand, growth, wave size, incident risk, and
 revenue—so the simulation stays deterministic and directly testable.
+
+Version 5 adds a bounded `WorkshopScenario` overlay. It can change the same
+pressure inputs plus building and upgrade caps, autoscaling availability, and a
+typed incident deck. The engine validates the overlay at creation, import, and
+save restoration; invalid or mismatched overlays are discarded. Daily
+challenges are derived locally from a strict calendar date and remain fully
+deterministic.
 
 Every placed service gets a derived `ServiceSignal`: incoming and served
 requests, capacity, utilization, latency, errors, queue depth, reachability,
@@ -35,9 +42,11 @@ release traffic, progresses over 25 ticks, promotes on success, and rolls back
 manually or automatically after a failed health check.
 
 Each run also has an immutable `challengeSeed` alongside the evolving random
-generator state. A challenge code encodes only the scenario and seed with a
-checksum. Parsing is strict and bounded, so loading a code creates a fresh
-deterministic run without importing another player's saved state.
+generator state. A standard challenge code encodes only the scenario and seed
+with a checksum. A Workshop code encodes bounded numeric rules, enum choices,
+and the seed; its free-form local title is excluded. Parsing is strict and
+bounded, so loading either code creates a fresh deterministic run without
+importing another player's saved state.
 
 The engine accumulates bounded `RunTelemetry`: request demand and service,
 operating cost, per-signal SLO compliance, incident starts and recoveries,
@@ -52,14 +61,15 @@ The UI stores a single immutable `GameState`. Mutations are small transition
 functions. Save data uses a versioned envelope in `localStorage`; the parser
 caps payload and collection sizes, validates every consumed scalar and nested
 record, requires unique building positions and connections, and rebuilds
-catalog-owned achievement copy. Version 1–3 saves migrate to version 4 with safe
+catalog-owned achievement copy. Version 1–4 saves migrate to version 5 with safe
 defaults for challenge, telemetry, reliability, and release fields. Legacy
 undirected connections are oriented by service stage during migration. Malformed or
 incompatible payloads are discarded. Settings are device-local and contain no
 sensitive data.
 
-Run history uses a separate versioned payload capped at 12 summaries. Its parser
-validates every scalar, scenario, grade, and challenge checksum. Summaries keep
+Run history uses a separate versioned payload capped at 12 summaries. A separate
+5 KB-capped payload stores one validated Workshop draft. The history parser
+validates every scalar, scenario, grade, and standard or Workshop checksum. Summaries keep
 only aggregate operational results and remain when the active city is reset;
 they never contain the map, event text, settings, or player-identifying data.
 

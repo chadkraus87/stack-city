@@ -25,6 +25,9 @@ test("build prerenders the complete Stack City game shell", async () => {
   assert.match(html, /Steady Growth/);
   assert.match(html, /Launch Day/);
   assert.match(html, /Chaos Lab/);
+  assert.match(html, /Daily incident/);
+  assert.match(html, /Scenario Workshop/);
+  assert.match(html, /Choose the next pressure profile/);
   assert.match(html, /Deterministic challenge code/);
   assert.match(html, /Load code/);
   assert.match(html, /New seed/);
@@ -65,5 +68,7 @@ test("prerenders transparent privacy, terms, and accessibility disclosures", asy
   assert.match(html, /does not intentionally set cookies/);
   assert.match(html, /not directed to children under/);
   assert.match(html, /WCAG 2\.2 Level AA/);
+  assert.match(html, /Workshop codes may also contain bounded game settings/);
+  assert.match(html, /October 23, 2026/);
   assert.match(html, /security\/advisories\/new/);
 });

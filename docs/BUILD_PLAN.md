@@ -20,6 +20,8 @@ architecture explanations, and portfolio-friendly polish.
 7. Publish transparent privacy, terms, and accessibility disclosures,
    proprietary source-available licensing, third-party notices, and a
    monetization gate.
+8. Add a campaign map, local daily challenge, and validated Scenario Workshop
+   with shareable rules, architectural caps, and custom incident decks.
 
 ## Definition of done for this release
 
@@ -38,3 +40,5 @@ architecture explanations, and portfolio-friendly polish.
 - Releases can canary, promote, manually roll back, and auto-rollback on failure.
 - Legal, licensing, privacy, accessibility, security-reporting, robots, sitemap,
   and public-launch documentation ship with the same version as the game.
+- Custom scenarios stay local, respect hard simulation limits, and share only
+  checksummed rules rather than free-form titles or saved player state.
