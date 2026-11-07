@@ -42,3 +42,6 @@ architecture explanations, and portfolio-friendly polish.
   and public-launch documentation ship with the same version as the game.
 - Custom scenarios stay local, respect hard simulation limits, and share only
   checksummed rules rather than free-form titles or saved player state.
+- Public beta hardening adds honest persistence status, graceful error and 404
+  recovery, install metadata, privacy-safe feedback intake, and a pinned CI
+  quality gate without adding accounts, analytics, or a backend.

@@ -23,6 +23,11 @@ history are stored only in the current browser's `localStorage`. The payloads ar
 and structurally validated before restoration. Invalid saves or histories are
 discarded instead of partially trusted.
 
+Storage access is capability-checked before restoration. If storage is blocked,
+full, or unavailable, the game remains playable for the current tab and shows a
+visible warning instead of claiming that progress was saved. A `pagehide` handler
+makes one final best-effort write without transmitting data.
+
 Standard challenge codes contain only a public scenario identifier, a 32-bit
 simulation seed, and a checksum. Workshop codes additionally contain bounded
 numeric rules and enum choices. Free-form local titles are excluded. Codes
@@ -56,6 +61,8 @@ Malformed current-version rules, links, or release state are discarded.
 - Dependencies are pinned in `package-lock.json`; the release gate includes
   lint, a production build, deterministic tests, rendered-output checks, and
   dependency audits.
+- GitHub Actions use commit-pinned checkout and Node setup actions. Dependabot
+  monitors npm and workflow dependencies on bounded schedules.
 - GitHub secret scanning, push protection, Dependabot alerts, and private
   vulnerability reporting should remain enabled for the public repository.
 

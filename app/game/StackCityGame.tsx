@@ -71,6 +71,8 @@ const MAX_HISTORY_BYTES = 100_000;
 const MAX_WORKSHOP_BYTES = 5_000;
 const DEFAULT_CHALLENGE_SEED = 82491;
 const CONNECTION_COST = 250;
+const STORAGE_PROBE_KEY = "stack-city-storage-probe";
+const BETA_FEEDBACK_URL = "https://github.com/chadkraus87/stack-city/issues/new?template=beta-feedback.yml";
 const CATEGORIES: Array<BuildingCategory | "All"> = ["All", "Edge", "Compute", "Data", "Platform"];
 const GRID_CELLS = Array.from({ length: GRID_COLUMNS * GRID_ROWS }, (_, index) => ({
   x: index % GRID_COLUMNS,
@@ -145,6 +147,34 @@ function percent(value: number, digits = 1): string {
 function elapsed(tick: number): string {
   const seconds = Math.floor(tick / 2);
   return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function storageAvailable(): boolean {
+  try {
+    window.localStorage.setItem(STORAGE_PROBE_KEY, "1");
+    window.localStorage.removeItem(STORAGE_PROBE_KEY);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function removeStoredValue(key: string): boolean {
+  try {
+    window.localStorage.removeItem(key);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function writeStoredValue(key: string, value: string): boolean {
+  try {
+    window.localStorage.setItem(key, value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function calculateUpgradeCost(building: Building): number {
@@ -298,6 +328,8 @@ export function StackCityGame() {
   const [showReport, setShowReport] = useState(false);
   const [tourStep, setTourStep] = useState<number | null>(null);
   const [lastSavedTick, setLastSavedTick] = useState<number | null>(null);
+  const [canPersist, setCanPersist] = useState<boolean | null>(null);
+  const [restoredExistingCity, setRestoredExistingCity] = useState(false);
   const [selectedScenario, setSelectedScenario] = useState<ScenarioId>("growth");
   const [selectedWorkshop, setSelectedWorkshop] = useState<WorkshopScenario | null>(null);
   const [workshopDraft, setWorkshopDraft] = useState<WorkshopScenario>(DEFAULT_WORKSHOP_SCENARIO);
@@ -311,6 +343,7 @@ export function StackCityGame() {
   const [copyStatus, setCopyStatus] = useState("");
   const [runHistory, setRunHistory] = useState<RunSummary[]>([]);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const latestGameRef = useRef(game);
   const resumeAfterTourRef = useRef(true);
   const resumeAfterReportRef = useRef(false);
 
@@ -337,6 +370,15 @@ export function StackCityGame() {
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
+      const persistenceAvailable = storageAvailable();
+      setCanPersist(persistenceAvailable);
+      if (!persistenceAvailable) {
+        const now = new Date();
+        const localDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+        setDailyChallenge(createDailyChallenge(localDate));
+        setHydrated(true);
+        return;
+      }
       try {
         const raw = window.localStorage.getItem(SAVE_KEY)
           ?? LEGACY_SAVE_KEYS.map((key) => window.localStorage.getItem(key)).find(Boolean);
@@ -352,15 +394,16 @@ export function StackCityGame() {
             setSelectedSeed(restored.challengeSeed);
             setChallengeInput(createStateChallengeCode(restored));
             setLastSavedTick(restored.tick);
-            for (const key of LEGACY_SAVE_KEYS) window.localStorage.removeItem(key);
+            setRestoredExistingCity(true);
+            for (const key of LEGACY_SAVE_KEYS) removeStoredValue(key);
           } else {
-            window.localStorage.removeItem(SAVE_KEY);
-            for (const key of LEGACY_SAVE_KEYS) window.localStorage.removeItem(key);
+            removeStoredValue(SAVE_KEY);
+            for (const key of LEGACY_SAVE_KEYS) removeStoredValue(key);
           }
         }
       } catch {
-        window.localStorage.removeItem(SAVE_KEY);
-        for (const key of LEGACY_SAVE_KEYS) window.localStorage.removeItem(key);
+        removeStoredValue(SAVE_KEY);
+        for (const key of LEGACY_SAVE_KEYS) removeStoredValue(key);
       }
       try {
         const rawHistory = window.localStorage.getItem(HISTORY_KEY);
@@ -368,10 +411,10 @@ export function StackCityGame() {
           if (rawHistory.length > MAX_HISTORY_BYTES) throw new Error("Run history exceeds the safety limit.");
           const restoredHistory = restoreRunHistory(JSON.parse(rawHistory));
           if (restoredHistory.length > 0) setRunHistory(restoredHistory);
-          else window.localStorage.removeItem(HISTORY_KEY);
+          else removeStoredValue(HISTORY_KEY);
         }
       } catch {
-        window.localStorage.removeItem(HISTORY_KEY);
+        removeStoredValue(HISTORY_KEY);
       }
       try {
         const rawWorkshop = window.localStorage.getItem(WORKSHOP_KEY);
@@ -379,10 +422,10 @@ export function StackCityGame() {
           if (rawWorkshop.length > MAX_WORKSHOP_BYTES) throw new Error("Workshop draft exceeds the safety limit.");
           const restoredWorkshop = restoreWorkshopScenario(JSON.parse(rawWorkshop));
           if (restoredWorkshop) setWorkshopDraft(restoredWorkshop);
-          else window.localStorage.removeItem(WORKSHOP_KEY);
+          else removeStoredValue(WORKSHOP_KEY);
         }
       } catch {
-        window.localStorage.removeItem(WORKSHOP_KEY);
+        removeStoredValue(WORKSHOP_KEY);
       } finally {
         const now = new Date();
         const localDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
@@ -396,12 +439,12 @@ export function StackCityGame() {
   useEffect(() => {
     if (!hydrated) return;
     const timer = window.setTimeout(() => {
-      try {
-        window.localStorage.setItem(SAVE_KEY, JSON.stringify(game));
-        for (const key of LEGACY_SAVE_KEYS) window.localStorage.removeItem(key);
+      if (writeStoredValue(SAVE_KEY, JSON.stringify(game))) {
+        for (const key of LEGACY_SAVE_KEYS) removeStoredValue(key);
         setLastSavedTick(game.tick);
-      } catch {
-        // Storage can be unavailable in private or restricted browsing modes.
+        setCanPersist(true);
+      } else {
+        setCanPersist(false);
       }
     }, 350);
     return () => window.clearTimeout(timer);
@@ -410,10 +453,8 @@ export function StackCityGame() {
   useEffect(() => {
     if (!hydrated) return;
     const timer = window.setTimeout(() => {
-      try {
-        window.localStorage.setItem(HISTORY_KEY, JSON.stringify({ version: 1, runs: runHistory }));
-      } catch {
-        // History is optional when browser storage is unavailable.
+      if (!writeStoredValue(HISTORY_KEY, JSON.stringify({ version: 1, runs: runHistory }))) {
+        setCanPersist(false);
       }
     }, 350);
     return () => window.clearTimeout(timer);
@@ -423,12 +464,26 @@ export function StackCityGame() {
     if (!hydrated) return;
     const safe = restoreWorkshopScenario(workshopDraft);
     if (!safe) return;
-    try {
-      window.localStorage.setItem(WORKSHOP_KEY, JSON.stringify(safe));
-    } catch {
-      // A local draft is optional when browser storage is unavailable.
-    }
+    const timer = window.setTimeout(() => {
+      if (!writeStoredValue(WORKSHOP_KEY, JSON.stringify(safe))) {
+        setCanPersist(false);
+      }
+    }, 350);
+    return () => window.clearTimeout(timer);
   }, [hydrated, workshopDraft]);
+
+  useEffect(() => {
+    latestGameRef.current = game;
+  }, [game]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    const flushLatestSave = () => {
+      writeStoredValue(SAVE_KEY, JSON.stringify(latestGameRef.current));
+    };
+    window.addEventListener("pagehide", flushLatestSave);
+    return () => window.removeEventListener("pagehide", flushLatestSave);
+  }, [hydrated]);
 
   useEffect(() => {
     if (game.paused || game.gameOver || showIntro || tourStep !== null) return;
@@ -452,6 +507,8 @@ export function StackCityGame() {
         setShowGuide(false);
         setShowSettings(false);
         setShowWorkshop(false);
+        setShowReset(false);
+        setShowClearHistory(false);
         if (showReport && !game.gameOver) {
           setShowReport(false);
           setGame((current) => ({ ...current, paused: !resumeAfterReportRef.current }));
@@ -494,7 +551,11 @@ export function StackCityGame() {
   const buildingLimitReached = game.buildings.length >= (game.workshop?.maxBuildings ?? 48);
   const incidentBuildingIds = new Set(game.incidents.map((incident) => incident.buildingId));
   const unlockedAchievements = game.achievements.filter((achievement) => achievement.unlockedAt !== undefined);
-  const saveStatus = lastSavedTick === game.tick ? "saved" : "saving";
+  const saveStatus = canPersist === false
+    ? "unavailable"
+    : lastSavedTick === game.tick
+      ? "saved"
+      : "saving";
   const scenarioDefinition = getScenarioDefinition(game);
   const selectedScenarioDefinition = getScenarioDefinition({
     scenario: selectedWorkshop?.template ?? selectedScenario,
@@ -852,7 +913,7 @@ export function StackCityGame() {
   };
 
   const clearRunHistory = () => {
-    window.localStorage.removeItem(HISTORY_KEY);
+    removeStoredValue(HISTORY_KEY);
     setRunHistory([]);
     setShowClearHistory(false);
   };
@@ -907,8 +968,8 @@ export function StackCityGame() {
   const resetGame = () => {
     if (game.tick > 0 && !game.reportRecorded) archiveRun(game, "manual");
     const fresh = createInitialState("growth", DEFAULT_CHALLENGE_SEED);
-    window.localStorage.removeItem(SAVE_KEY);
-    for (const key of LEGACY_SAVE_KEYS) window.localStorage.removeItem(key);
+    removeStoredValue(SAVE_KEY);
+    for (const key of LEGACY_SAVE_KEYS) removeStoredValue(key);
     setGame(fresh);
     setSelectedScenario("growth");
     setSelectedWorkshop(null);
@@ -926,6 +987,7 @@ export function StackCityGame() {
     setShowIntro(true);
     setTourStep(null);
     setLastSavedTick(null);
+    setRestoredExistingCity(false);
   };
 
   const updateSpeed = (speed: GameSpeed) => {
@@ -953,7 +1015,7 @@ export function StackCityGame() {
         <div className="brand-lockup">
           <div className="brand-mark" aria-hidden="true"><span>SC</span></div>
           <div>
-            <h1>Stack City</h1>
+            <div className="brand-title-row"><h1>Stack City</h1><span>Free public beta</span></div>
             <p>Build the infrastructure. Survive the traffic.</p>
           </div>
         </div>
@@ -998,7 +1060,9 @@ export function StackCityGame() {
           <span style={{ width: `${rankProgress * 100}%` }} />
         </div>
         <div className="rank-next">{nextRank ? `${Math.round(game.xp)} / ${nextRank.xp} XP` : "MAX RANK"}</div>
-        <div className={`save-state ${saveStatus}`}><span /> {saveStatus === "saving" ? "Saving" : "Saved locally"}</div>
+        <div className={`save-state ${saveStatus}`} role="status" aria-live="polite">
+          <span /> {saveStatus === "unavailable" ? "Local save unavailable" : saveStatus === "saving" ? "Saving" : "Saved locally"}
+        </div>
       </section>
 
       <div className="game-layout">
@@ -1307,7 +1371,8 @@ export function StackCityGame() {
         <span>STACK CITY // LOCAL SIMULATION</span>
         <span>SLO: <b className={game.metrics.availability >= 0.99 ? "metric-good" : "metric-bad"}>{game.metrics.availability >= 0.99 ? "PASSING" : "AT RISK"}</b></span>
         <span>{game.buildings.length} services · {game.connections.length} links</span>
-        <span>{lastSavedTick === null ? "New city" : `Last save ${elapsed(lastSavedTick)}`}</span>
+        <span>{canPersist === false ? "Progress lasts for this tab only" : lastSavedTick === null ? "New city" : `Last save ${elapsed(lastSavedTick)}`}</span>
+        <a href={BETA_FEEDBACK_URL} target="_blank" rel="noreferrer">Beta feedback</a>
         <Link href="/legal">Privacy · Terms · Accessibility</Link>
       </footer>
 
@@ -1321,6 +1386,7 @@ export function StackCityGame() {
           <div className="shortcut-list"><span><kbd>Space</kbd> pause</span><span><kbd>Esc</kbd> cancel tool</span></div>
           <button type="button" className="settings-tour-button" onClick={replayTour}>Replay guided walkthrough</button>
           <button type="button" className="settings-tour-button" onClick={openOperationsReport}>Open operations review</button>
+          <a className="settings-legal-link" href={BETA_FEEDBACK_URL} target="_blank" rel="noreferrer">Report beta feedback</a>
           <Link className="settings-legal-link" href="/legal">Legal &amp; privacy center</Link>
           <button type="button" className="danger-outline-button" onClick={() => setShowReset(true)}>Start a new city</button>
         </div>
@@ -1352,13 +1418,13 @@ export function StackCityGame() {
               <div className="intro-traffic"><i /><i /><i /></div>
             </div>
             <div className="intro-content">
-              <span className="eyebrow">Infrastructure strategy / Season 01</span>
+              <span className="eyebrow">Free public beta / Season 01</span>
               <h2 id="intro-title">Build the infrastructure.<br /><em>Survive the traffic.</em></h2>
               <p>You’re the mayor of a digital city. Place services, connect the request path, scale bottlenecks, and keep users happy when production gets messy.</p>
               <div className="intro-features">
                 <span><b>13</b> service types</span><span><b>3</b> operations drills</span><span><b>Local</b> autosave</span>
               </div>
-              {game.tick > 0 ? (
+              {restoredExistingCity || game.tick > 0 ? (
                 <div className="intro-actions">
                   <button className="primary-button start-button" type="button" onClick={continueRun}>Continue city<span>→</span></button>
                   <button className="secondary-button" type="button" onClick={replayTour}>Replay walkthrough</button>
@@ -1409,7 +1475,10 @@ export function StackCityGame() {
                 </>
               )}
               <button className="intro-guide-button" type="button" onClick={() => setShowGuide(true)}>Read the architect’s field guide</button>
-              <Link className="intro-legal-link" href="/legal">Privacy · Terms · Accessibility</Link>
+              <div className="intro-trust-links">
+                <a className="intro-legal-link" href={BETA_FEEDBACK_URL} target="_blank" rel="noreferrer">Send beta feedback</a>
+                <Link className="intro-legal-link" href="/legal">Privacy · Terms · Accessibility</Link>
+              </div>
             </div>
           </section>
         </div>

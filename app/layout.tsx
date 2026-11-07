@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 const siteUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL
@@ -14,6 +14,7 @@ export const metadata: Metadata = {
   description:
     "Build a digital city, route live traffic, resolve incidents, and learn systems architecture by doing.",
   applicationName: "Stack City",
+  manifest: "/manifest.webmanifest",
   creator: "Chad Kraus",
   publisher: "Chad Kraus",
   category: "games",
@@ -49,6 +50,11 @@ export const metadata: Metadata = {
     description: "Build the infrastructure. Survive the traffic.",
     images: ["/og.png"],
   },
+};
+
+export const viewport: Viewport = {
+  colorScheme: "dark",
+  themeColor: "#060b0f",
 };
 
 export default function RootLayout({

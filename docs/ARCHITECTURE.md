@@ -67,6 +67,11 @@ undirected connections are oriented by service stage during migration. Malformed
 incompatible payloads are discarded. Settings are device-local and contain no
 sensitive data.
 
+The client probes local storage before reading saves, reports persistence loss
+to the player, and keeps gameplay available in memory when storage is blocked.
+Normal writes remain debounced; `pagehide` performs a final best-effort save.
+No fallback sends game state to a server.
+
 Run history uses a separate versioned payload capped at 12 summaries. A separate
 5 KB-capped payload stores one validated Workshop draft. The history parser
 validates every scalar, scenario, grade, and standard or Workshop checksum. Summaries keep

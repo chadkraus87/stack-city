@@ -23,6 +23,9 @@ The current build is intentionally low-data:
 - dependencies are pinned and their license families are documented; and
 - production security headers, defensive save parsing, private vulnerability
   reporting, automated checks, and browser QA are part of the release gate.
+- the free public beta includes visible feedback and recovery paths, a public
+  issue form with a privacy warning, a save-unavailable warning, manifest
+  metadata, and a commit-pinned GitHub Actions quality gate.
 
 These controls reduce exposure. They do not create a legal certification or
 guarantee compliance in every jurisdiction.
@@ -139,6 +142,10 @@ Useful primary guidance:
   personal save, local Vercel metadata, or unexpected source map.
 - [ ] Make a release tag, record the deployed commit, test rollback, and retain a
   copy of the legal text that applied to that release.
+
+For a free proof-of-concept beta, complete every rehearsal item above before
+sharing the public link. Monetization remains out of scope until the additional
+owner, legal, tax, payment, and support gates are completed.
 
 The U.S. Department of Justice recommends combining automated and manual
 accessibility testing and providing a way to report barriers. Vercel also

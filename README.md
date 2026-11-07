@@ -2,7 +2,7 @@
 
 <p align="center">
   <strong>Build the infrastructure. Survive the traffic.</strong><br />
-  A local-first systems architecture strategy game for the browser.
+  A free, local-first systems architecture strategy game for the browser — now in public beta.
 </p>
 
 <p align="center">
@@ -17,6 +17,20 @@ is a real infrastructure concept, every glowing packet is a user request, and
 every choice changes capacity, latency, availability, operating cost, and user
 satisfaction. There are no accounts, API keys, ads, or paid services: open the
 game and start building.
+
+## Public beta
+
+The current release is a free proof-of-concept beta. It has no sign-up, payment,
+advertising, analytics SDK, or cloud save. Progress stays in the current browser,
+and the interface warns when browser storage is unavailable. Unexpected route
+errors provide a recovery screen instead of leaving a blank page.
+
+Use the in-game **Beta feedback** link to report reproducible gameplay bugs,
+confusing interactions, responsive-layout problems, balance issues, or
+accessibility barriers. GitHub issues are public, so the form explicitly asks
+testers not to include personal information, save data, local Workshop titles,
+or security vulnerabilities. Security reports belong in private GitHub Security
+Advisories.
 
 ## Video demos
 
@@ -59,6 +73,8 @@ it on the map, and connects it to the API request path.
   field guide
 - pause plus 1×, 2×, and 4× simulation speeds
 - validated, versioned local autosave
+- explicit save-unavailable messaging and a final page-exit save attempt
+- accessible recovery, not-found, and privacy-safe beta-feedback paths
 - keyboard, touch, reduced-motion, high-contrast, and responsive support
 
 ## How to play
@@ -340,6 +356,10 @@ Open the local address printed by Next.js.
 The release gate runs deterministic engine tests, production prerender checks,
 TypeScript compilation, React and accessibility lint rules, desktop and phone
 browser playtests, console-error inspection, and dependency audits.
+
+GitHub Actions runs the locked install, complete release check, and dependency
+audit for pushes to `main` and for pull requests. Dependabot checks npm packages
+weekly and GitHub Actions monthly.
 
 Production responses set a restrictive Content Security Policy, block inline
 event-handler scripts and framing, isolate cross-origin resources, disable MIME

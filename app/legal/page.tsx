@@ -7,7 +7,7 @@ export const metadata: Metadata = {
   alternates: { canonical: "/legal" },
 };
 
-const EFFECTIVE_DATE = "October 23, 2026";
+const EFFECTIVE_DATE = "November 7, 2026";
 
 export default function LegalPage() {
   return (
@@ -70,7 +70,8 @@ export default function LegalPage() {
             <p>
               Stack City does not intentionally set cookies. Browser local storage is used only for
               the game functions described above, not for cross-site identification, advertising,
-              or analytics. A consent banner is therefore not presented in the current release.
+              or analytics. If local storage is unavailable, the game warns that progress will last
+              only for the current tab. A consent banner is therefore not presented in the current release.
             </p>
             <h3>Your choices</h3>
             <p>
@@ -160,6 +161,10 @@ export default function LegalPage() {
               vulnerabilities should be submitted privately through
               <a href="https://github.com/chadkraus87/stack-city/security/advisories/new"> GitHub&apos;s security advisory form</a>,
               never as a public issue.
+            </p>
+            <p>
+              Beta feedback submitted through GitHub issues is public. Do not include personal
+              information, browser save data, local Workshop titles, credentials, or private security details.
             </p>
             <p>
               For a copyright complaint, identify the protected work, the material at issue, your
