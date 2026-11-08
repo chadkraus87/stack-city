@@ -7,7 +7,7 @@ export const metadata: Metadata = {
   alternates: { canonical: "/legal" },
 };
 
-const EFFECTIVE_DATE = "November 7, 2026";
+const EFFECTIVE_DATE = "November 8, 2026";
 
 export default function LegalPage() {
   return (
@@ -56,7 +56,13 @@ export default function LegalPage() {
               challenge codes contain only a scenario identifier, deterministic simulation seed,
               and integrity checksum. Workshop codes may also contain bounded game settings such
               as traffic, budget, limits, and incident type. A Workshop&apos;s free-form local title is
-              never included in its share code.
+              never included in its share code. Optional replay codes contain the same bounded
+              scenario data plus up to 600 timestamped game decisions, such as building, linking,
+              upgrading, or resolving an incident. They exclude player names, local Workshop titles,
+              browser history, save summaries, and real-world timestamps. Imported replay playback
+              is temporary, is not autosaved over your active city, and restores your prior game when
+              its review closes. Scorecard images and LinkedIn captions are generated entirely in the
+              browser and are shared only if you choose to download or copy them.
             </p>
             <h3>Hosting information</h3>
             <p>

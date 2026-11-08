@@ -35,6 +35,14 @@ contain no save data, browser identifier, timestamp, account information, or
 personal data. Copying a code uses the browser
 clipboard and does not make a network request.
 
+R1 replay codes add a bounded list of at most 600 in-game decisions and an end
+tick. Imports are capped at 80 KB, checksummed, decoded as strict UTF-8, rebuilt
+into typed records, and replayed through the same deterministic transitions as
+live controls. They cannot contain scripts or links. Imported playback is never
+written over the active local save; the prior city is restored when the replay
+review closes. Scorecard SVGs escape all text and are created as local Blob
+downloads; LinkedIn captions are copied only after a player action.
+
 **Start a new city** replaces the active save but deliberately retains the
 local run summaries. **Clear history** performs a confirmed erase of those
 summaries without touching the active city. Browser site-data controls erase
@@ -43,10 +51,11 @@ all Stack City data.
 Repository secrets and local deployment state must stay in ignored `.env*` and
 `.vercel/` paths. Never commit credentials or real user data.
 
-The version 5 save schema also validates Workshop constraints and incident
+The version 6 save schema also validates Workshop constraints and incident
 decks, retry controls, release progress, revision counters, per-run operations
-telemetry, and canary target eligibility. Legacy version 1–4 data migrates with
-safe defaults; version 1–3 links are migrated into directed request flow.
+telemetry, replay actions, incident-chain metadata, and canary target eligibility.
+Legacy version 1–5 data migrates with safe defaults; version 1–3 links are
+migrated into directed request flow.
 Malformed current-version rules, links, or release state are discarded.
 
 ## Security controls
@@ -58,6 +67,8 @@ Malformed current-version rules, links, or release state are discarded.
   dynamic code evaluation, uploads, remote content, or browser credentials.
 - Public challenge codes are length-bounded, checksummed, and contain no player
   state, local title, or identity.
+- Replay codes and SVG scorecards are bounded client-side exports with strict
+  parsing or XML escaping and no automatic upload path.
 - Dependencies are pinned in `package-lock.json`; the release gate includes
   lint, a production build, deterministic tests, rendered-output checks, and
   dependency audits.

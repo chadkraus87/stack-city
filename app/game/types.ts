@@ -19,12 +19,20 @@ export type BuildingCategory = "Edge" | "Compute" | "Data" | "Platform";
 export type IncidentDomain = "mixed" | "compute" | "data" | "network";
 export type Severity = "warning" | "critical";
 export type GameSpeed = 0 | 1 | 2 | 4;
-export type ScenarioId = "growth" | "launch-day" | "chaos-lab";
+export type ScenarioId =
+  | "growth"
+  | "launch-day"
+  | "edge-surge"
+  | "data-storm"
+  | "chaos-lab"
+  | "resilience-sprint";
+export type CampaignPackId = "foundation" | "scale-delivery" | "reliability";
 export type RetryPolicy = "off" | "bounded" | "aggressive";
 export type ServiceStatus = "healthy" | "stressed" | "overloaded" | "incident" | "offline";
 
 export interface ScenarioDefinition {
   id: ScenarioId;
+  packId: CampaignPackId;
   name: string;
   difficulty: "Standard" | "Advanced" | "Expert" | "Custom";
   description: string;
@@ -33,7 +41,16 @@ export interface ScenarioDefinition {
   trafficGrowth: number;
   waveTraffic: number;
   incidentRisk: number;
+  incidentDeck: IncidentDomain;
+  chainRisk: number;
   revenueMultiplier: number;
+}
+
+export interface CampaignPackDefinition {
+  id: CampaignPackId;
+  name: string;
+  description: string;
+  scenarioIds: ScenarioId[];
 }
 
 export interface WorkshopScenario {
@@ -87,12 +104,36 @@ export interface Connection {
 
 export interface Incident {
   id: string;
+  definitionId?: string;
   buildingId: string;
   title: string;
   message: string;
   severity: Severity;
   remaining: number;
   startedAt: number;
+  chainId?: string;
+  chainStep?: number;
+}
+
+export type ReplayAction =
+  | { tick: number; type: "build"; kind: BuildingKind; x: number; y: number }
+  | { tick: number; type: "connect"; from: string; to: string }
+  | { tick: number; type: "upgrade"; buildingId: string }
+  | { tick: number; type: "decommission"; buildingId: string }
+  | { tick: number; type: "resolve"; incidentId: string }
+  | { tick: number; type: "retry"; policy: RetryPolicy }
+  | { tick: number; type: "breaker"; enabled: boolean }
+  | { tick: number; type: "autoscaling"; enabled: boolean }
+  | { tick: number; type: "canary-start"; buildingId: string }
+  | { tick: number; type: "canary-rollback" };
+
+export interface ReplayRecording {
+  version: 1;
+  scenario: ScenarioId;
+  workshop: WorkshopScenario | null;
+  challengeSeed: number;
+  endTick: number;
+  actions: ReplayAction[];
 }
 
 export interface GameEvent {
@@ -177,6 +218,7 @@ export interface RunTelemetry {
   incidentsStarted: number;
   incidentsResolved: number;
   incidentsAutoRecovered: number;
+  incidentEscalations: number;
   totalResolutionTicks: number;
   peakTraffic: number;
   peakLatency: number;
@@ -253,7 +295,7 @@ export interface GameSettings {
 }
 
 export interface GameState {
-  version: 5;
+  version: 6;
   scenario: ScenarioId;
   workshop: WorkshopScenario | null;
   challengeSeed: number;
@@ -280,5 +322,6 @@ export interface GameState {
   telemetry: RunTelemetry;
   operations: OperationsControls;
   release: ReleaseState;
+  replayActions: ReplayAction[];
   settings: GameSettings;
 }

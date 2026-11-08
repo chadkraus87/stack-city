@@ -18,7 +18,6 @@ import {
   RANKS,
 } from "./catalog.ts";
 import {
-  addManualAchievement,
   buildingCapacity,
   calculateMetrics,
   connectedBuildingIds,
@@ -35,14 +34,18 @@ import {
   nextId,
   parseChallengeCode,
   parseWorkshopCode,
-  rollbackCanaryDeployment,
-  resolveIncident,
   restoreGameState,
   restoreRunHistory,
   restoreWorkshopScenario,
   simulateTick,
-  startCanaryDeployment,
 } from "./engine.ts";
+import { applyPlayerAction, CONNECTION_COST } from "./actions.ts";
+import {
+  advanceReplay,
+  createReplayCode,
+  createReplayPlaybackState,
+} from "./replay.ts";
+import { ReplayLab, ShareScorecard } from "./ReplayAndScorecard.tsx";
 import {
   CampaignMap,
   type CampaignSelection,
@@ -57,20 +60,21 @@ import type {
   RunEndReason,
   RunSummary,
   RetryPolicy,
+  ReplayAction,
+  ReplayRecording,
   ScenarioId,
   ServiceSignal,
   WorkshopScenario,
 } from "./types.ts";
 
-const SAVE_KEY = "stack-city-save-v5";
-const LEGACY_SAVE_KEYS = ["stack-city-save-v4", "stack-city-save-v3", "stack-city-save-v2", "stack-city-save-v1"] as const;
+const SAVE_KEY = "stack-city-save-v6";
+const LEGACY_SAVE_KEYS = ["stack-city-save-v5", "stack-city-save-v4", "stack-city-save-v3", "stack-city-save-v2", "stack-city-save-v1"] as const;
 const HISTORY_KEY = "stack-city-run-history-v1";
 const WORKSHOP_KEY = "stack-city-workshop-v1";
 const MAX_SAVE_BYTES = 250_000;
 const MAX_HISTORY_BYTES = 100_000;
 const MAX_WORKSHOP_BYTES = 5_000;
 const DEFAULT_CHALLENGE_SEED = 82491;
-const CONNECTION_COST = 250;
 const STORAGE_PROBE_KEY = "stack-city-storage-probe";
 const BETA_FEEDBACK_URL = "https://github.com/chadkraus87/stack-city/issues/new?template=beta-feedback.yml";
 const CATEGORIES: Array<BuildingCategory | "All"> = ["All", "Edge", "Compute", "Data", "Platform"];
@@ -326,6 +330,8 @@ export function StackCityGame() {
   const [showReset, setShowReset] = useState(false);
   const [showClearHistory, setShowClearHistory] = useState(false);
   const [showReport, setShowReport] = useState(false);
+  const [showReplay, setShowReplay] = useState(false);
+  const [replayStatus, setReplayStatus] = useState<"idle" | "playing" | "complete">("idle");
   const [tourStep, setTourStep] = useState<number | null>(null);
   const [lastSavedTick, setLastSavedTick] = useState<number | null>(null);
   const [canPersist, setCanPersist] = useState<boolean | null>(null);
@@ -343,9 +349,19 @@ export function StackCityGame() {
   const [copyStatus, setCopyStatus] = useState("");
   const [runHistory, setRunHistory] = useState<RunSummary[]>([]);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const playbackRef = useRef<{ recording: ReplayRecording; nextActionIndex: number } | null>(null);
+  const replayReturnRef = useRef<{
+    state: GameState;
+    showIntro: boolean;
+    showReport: boolean;
+    selectedId: string | null;
+    buildMode: BuildingKind | null;
+    connectFrom: string | null;
+  } | null>(null);
   const latestGameRef = useRef(game);
   const resumeAfterTourRef = useRef(true);
   const resumeAfterReportRef = useRef(false);
+  const resumeAfterReplayRef = useRef(false);
 
   const playTone = useCallback((frequency: number, duration = 0.055) => {
     if (!game.settings.sound || typeof window === "undefined") return;
@@ -437,7 +453,7 @@ export function StackCityGame() {
   }, []);
 
   useEffect(() => {
-    if (!hydrated) return;
+    if (!hydrated || replayStatus !== "idle") return;
     const timer = window.setTimeout(() => {
       if (writeStoredValue(SAVE_KEY, JSON.stringify(game))) {
         for (const key of LEGACY_SAVE_KEYS) removeStoredValue(key);
@@ -448,7 +464,7 @@ export function StackCityGame() {
       }
     }, 350);
     return () => window.clearTimeout(timer);
-  }, [game, hydrated]);
+  }, [game, hydrated, replayStatus]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -473,8 +489,8 @@ export function StackCityGame() {
   }, [hydrated, workshopDraft]);
 
   useEffect(() => {
-    latestGameRef.current = game;
-  }, [game]);
+    if (replayStatus === "idle") latestGameRef.current = game;
+  }, [game, replayStatus]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -489,8 +505,19 @@ export function StackCityGame() {
     if (game.paused || game.gameOver || showIntro || tourStep !== null) return;
     const timer = window.setInterval(() => {
       setGame((current) => {
-        let next = current;
         const steps = Math.max(1, current.speed);
+        const playback = playbackRef.current;
+        if (playback) {
+          const advanced = advanceReplay(
+            current,
+            playback.recording,
+            playback.nextActionIndex,
+            steps,
+          );
+          playback.nextActionIndex = advanced.nextActionIndex;
+          return advanced.state;
+        }
+        let next = current;
         for (let index = 0; index < steps; index += 1) next = simulateTick(next);
         return next;
       });
@@ -499,9 +526,34 @@ export function StackCityGame() {
   }, [game.paused, game.gameOver, game.speed, showIntro, tourStep]);
 
   useEffect(() => {
+    const playback = playbackRef.current;
+    if (replayStatus !== "playing" || !playback || !game.paused) return;
+    if (game.tick < playback.recording.endTick && !game.gameOver) return;
+    playbackRef.current = null;
+    resumeAfterReportRef.current = false;
+    setReplayStatus("complete");
+    setShowReport(true);
+  }, [game.gameOver, game.paused, game.tick, replayStatus]);
+
+  useEffect(() => {
     const handleKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       if (event.key === "Escape") {
+        if (replayStatus === "playing") {
+          playbackRef.current = null;
+          resumeAfterReportRef.current = false;
+          setReplayStatus("complete");
+          setGame((current) => ({ ...current, paused: true }));
+          setShowReport(true);
+          return;
+        }
+        if (showReplay) {
+          setShowReplay(false);
+          if (!showReport && !game.gameOver) {
+            setGame((current) => ({ ...current, paused: !resumeAfterReplayRef.current }));
+          }
+          return;
+        }
         setBuildMode(null);
         setConnectFrom(null);
         setShowGuide(false);
@@ -520,6 +572,7 @@ export function StackCityGame() {
         return;
       }
       if (target?.matches("input, textarea, select")) return;
+      if (replayStatus === "playing") return;
       if (event.key.toLowerCase() === "p" && !showIntro && tourStep === null) {
         setGame((current) => ({ ...current, paused: !current.paused }));
       }
@@ -530,7 +583,7 @@ export function StackCityGame() {
     };
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [game.gameOver, showIntro, showReport, tourStep]);
+  }, [game.gameOver, replayStatus, showIntro, showReplay, showReport, tourStep]);
 
   const connected = useMemo(
     () => connectedBuildingIds(game.buildings, game.connections),
@@ -568,6 +621,10 @@ export function StackCityGame() {
   const maximumBuildings = game.workshop?.maxBuildings ?? GRID_COLUMNS * GRID_ROWS;
   const maximumLevel = game.workshop?.maxLevel ?? 4;
   const operationsReport = useMemo(() => createOperationsReport(game), [game]);
+  const replayCode = useMemo(
+    () => showReplay || showReport ? createReplayCode(game) : "",
+    [game, showReplay, showReport],
+  );
   const canaryTargets = useMemo(
     () => game.metrics.serviceSignals.filter((signal) =>
       signal.reachable
@@ -605,79 +662,28 @@ export function StackCityGame() {
     return () => window.clearTimeout(timer);
   }, [archiveRun, game, hydrated]);
 
-  const commit = useCallback((transition: (current: GameState) => GameState) => {
-    setGame((current) => withFreshMetrics(transition(current)));
-  }, []);
+  const dispatchPlayerAction = useCallback(
+    (createAction: (current: GameState) => ReplayAction) => {
+      if (playbackRef.current) return;
+      setGame((current) => applyPlayerAction(current, createAction(current)));
+    },
+    [],
+  );
 
   const placeBuilding = useCallback((kind: BuildingKind, x: number, y: number) => {
     const definition = BUILDINGS[kind];
-    commit((current) => {
-      if (current.rank < definition.unlockRank || current.money < definition.cost) return current;
-      if (current.workshop && current.buildings.length >= current.workshop.maxBuildings) return current;
-      if (current.buildings.some((building) => building.x === x && building.y === y)) return current;
-      const building: Building = {
-        id: nextId(kind, current),
-        kind,
-        x,
-        y,
-        level: 1,
-        health: 100,
-      };
-      let next: GameState = {
-        ...current,
-        money: current.money - definition.cost,
-        buildings: [...current.buildings, building],
-        events: [
-          {
-            id: `build-${building.id}`,
-            tick: current.tick,
-            tone: "info" as const,
-            message: `${definition.name} commissioned for ${money(definition.cost)}.`,
-          },
-          ...current.events,
-        ].slice(0, 18),
-      };
-      next = addManualAchievement(next, "first-build");
-      setSelectedId(building.id);
-      playTone(520);
-      return next;
-    });
-  }, [commit, playTone]);
+    if (game.rank < definition.unlockRank || game.money < definition.cost) return;
+    if (game.buildings.some((building) => building.x === x && building.y === y)) return;
+    const expectedId = nextId(kind, game);
+    dispatchPlayerAction((current) => ({ tick: current.tick, type: "build", kind, x, y }));
+    setSelectedId(expectedId);
+    playTone(520);
+  }, [dispatchPlayerAction, game, playTone]);
 
   const connectBuildings = useCallback((fromId: string, toId: string) => {
-    commit((current) => {
-      if (fromId === toId || current.money < CONNECTION_COST) return current;
-      const exists = current.connections.some(
-        (connection) =>
-          (connection.from === fromId && connection.to === toId)
-          || (connection.from === toId && connection.to === fromId),
-      );
-      if (exists) return current;
-      const from = current.buildings.find((building) => building.id === fromId);
-      const to = current.buildings.find((building) => building.id === toId);
-      if (!from || !to) return current;
-      let next: GameState = {
-        ...current,
-        money: current.money - CONNECTION_COST,
-        connections: [
-          ...current.connections,
-          { id: nextId("link", current), from: fromId, to: toId },
-        ],
-        events: [
-          {
-            id: `connect-${fromId}-${toId}-${current.tick}`,
-            tick: current.tick,
-            tone: "good" as const,
-            message: `${BUILDINGS[from.kind].shortName} now routes to ${BUILDINGS[to.kind].shortName}.`,
-          },
-          ...current.events,
-        ].slice(0, 18),
-      };
-      next = addManualAchievement(next, "first-link");
-      playTone(680);
-      return next;
-    });
-  }, [commit, playTone]);
+    dispatchPlayerAction((current) => ({ tick: current.tick, type: "connect", from: fromId, to: toId }));
+    playTone(680);
+  }, [dispatchPlayerAction, playTone]);
 
   const handleCell = (x: number, y: number, building: Building | undefined) => {
     if (buildMode && !building) {
@@ -700,121 +706,53 @@ export function StackCityGame() {
 
   const upgradeSelected = () => {
     if (!selected || selected.level >= maximumLevel) return;
-    const cost = calculateUpgradeCost(selected);
-    commit((current) => {
-      if (current.money < cost) return current;
-      const currentBuilding = current.buildings.find((building) => building.id === selected.id);
-      const currentMaximumLevel = current.workshop?.maxLevel ?? 4;
-      if (!currentBuilding || currentBuilding.level >= currentMaximumLevel) return current;
-      return {
-        ...current,
-        money: current.money - cost,
-        buildings: current.buildings.map((building) =>
-          building.id === selected.id
-            ? { ...building, level: building.level + 1, health: Math.min(100, building.health + 18) }
-            : building,
-        ),
-        events: [
-          {
-            id: `upgrade-${selected.id}-${current.tick}`,
-            tick: current.tick,
-            tone: "good" as const,
-            message: `${BUILDINGS[selected.kind].name} upgraded to level ${selected.level + 1}.`,
-          },
-          ...current.events,
-        ].slice(0, 18),
-      };
-    });
+    dispatchPlayerAction((current) => ({ tick: current.tick, type: "upgrade", buildingId: selected.id }));
     playTone(760);
   };
 
   const repairIncident = (incidentId: string) => {
-    commit((current) => resolveIncident(current, incidentId));
+    dispatchPlayerAction((current) => ({ tick: current.tick, type: "resolve", incidentId }));
     playTone(620, 0.08);
   };
 
   const sellSelected = () => {
     if (!selected) return;
-    const refund = Math.round(BUILDINGS[selected.kind].cost * 0.55 * (1 + (selected.level - 1) * 0.42));
-    commit((current) => {
-      const removedIncidents = current.incidents.filter(
-        (incident) => incident.buildingId === selected.id,
-      );
-      const removesCanary = current.release.status === "canary"
-        && current.release.targetBuildingId === selected.id;
-      return {
-        ...current,
-        money: current.money + refund,
-        buildings: current.buildings.filter((building) => building.id !== selected.id),
-        connections: current.connections.filter(
-          (connection) => connection.from !== selected.id && connection.to !== selected.id,
-        ),
-        incidents: current.incidents.filter((incident) => incident.buildingId !== selected.id),
-        telemetry: {
-          ...current.telemetry,
-          incidentsResolved: current.telemetry.incidentsResolved + removedIncidents.length,
-          canariesRolledBack: current.telemetry.canariesRolledBack + Number(removesCanary),
-          totalResolutionTicks: current.telemetry.totalResolutionTicks
-            + removedIncidents.reduce(
-              (total, incident) => total + Math.max(0, current.tick - incident.startedAt),
-              0,
-            ),
-        },
-        release: removesCanary
-          ? { ...current.release, status: "idle" as const, targetBuildingId: null, progress: 0 }
-          : current.release,
-        events: [
-          {
-            id: `sell-${selected.id}-${current.tick}`,
-            tick: current.tick,
-            tone: "info" as const,
-            message: `${BUILDINGS[selected.kind].name} decommissioned. ${money(refund)} recovered.`,
-          },
-          ...current.events,
-        ].slice(0, 18),
-      };
-    });
+    dispatchPlayerAction((current) => ({ tick: current.tick, type: "decommission", buildingId: selected.id }));
     setSelectedId(null);
     setConnectFrom(null);
     playTone(260);
   };
 
   const setRetryPolicy = (retryPolicy: RetryPolicy) => {
-    commit((current) => ({
-      ...current,
-      operations: { ...current.operations, retryPolicy },
-    }));
+    dispatchPlayerAction((current) => ({ tick: current.tick, type: "retry", policy: retryPolicy }));
     playTone(retryPolicy === "off" ? 260 : retryPolicy === "bounded" ? 520 : 390);
   };
 
   const toggleCircuitBreaker = () => {
-    commit((current) => ({
-      ...current,
-      operations: { ...current.operations, circuitBreaker: !current.operations.circuitBreaker },
+    dispatchPlayerAction((current) => ({
+      tick: current.tick,
+      type: "breaker",
+      enabled: !current.operations.circuitBreaker,
     }));
     playTone(610, 0.08);
   };
 
   const toggleAutoscaling = () => {
-    commit((current) => ({
-      ...current,
-      operations: {
-        ...current.operations,
-        autoscaling: current.workshop?.autoscalingAllowed === false
-          ? false
-          : !current.operations.autoscaling,
-      },
+    dispatchPlayerAction((current) => ({
+      tick: current.tick,
+      type: "autoscaling",
+      enabled: !current.operations.autoscaling,
     }));
     playTone(680, 0.08);
   };
 
   const launchCanary = (buildingId: string) => {
-    commit((current) => startCanaryDeployment(current, buildingId));
+    dispatchPlayerAction((current) => ({ tick: current.tick, type: "canary-start", buildingId }));
     playTone(740, 0.1);
   };
 
   const rollbackCanary = () => {
-    commit(rollbackCanaryDeployment);
+    dispatchPlayerAction((current) => ({ tick: current.tick, type: "canary-rollback" }));
     playTone(310, 0.08);
   };
 
@@ -898,6 +836,54 @@ export function StackCityGame() {
     }
   };
 
+  const openReplayLab = () => {
+    resumeAfterReplayRef.current = !game.paused && !showReport;
+    setGame((current) => ({ ...current, paused: true }));
+    setShowSettings(false);
+    setShowReplay(true);
+  };
+
+  const closeReplayLab = () => {
+    setShowReplay(false);
+    if (!showReport && !game.gameOver && replayStatus !== "playing") {
+      setGame((current) => ({ ...current, paused: !resumeAfterReplayRef.current }));
+    }
+  };
+
+  const playReplay = (recording: ReplayRecording) => {
+    replayReturnRef.current = {
+      state: game,
+      showIntro,
+      showReport,
+      selectedId,
+      buildMode,
+      connectFrom,
+    };
+    playbackRef.current = { recording, nextActionIndex: 0 };
+    setReplayStatus("playing");
+    setGame({
+      ...createReplayPlaybackState(recording),
+      settings: game.settings,
+    });
+    setShowReplay(false);
+    setShowReport(false);
+    setShowSettings(false);
+    setShowIntro(false);
+    setTourStep(null);
+    setSelectedId("web-1");
+    setBuildMode(null);
+    setConnectFrom(null);
+    playTone(720, 0.1);
+  };
+
+  const stopReplay = () => {
+    playbackRef.current = null;
+    resumeAfterReportRef.current = false;
+    setReplayStatus("complete");
+    setGame((current) => ({ ...current, paused: true }));
+    setShowReport(true);
+  };
+
   const openOperationsReport = () => {
     resumeAfterReportRef.current = !game.paused;
     setGame((current) => ({ ...current, paused: true }));
@@ -905,7 +891,29 @@ export function StackCityGame() {
     setShowReport(true);
   };
 
+  const returnFromReplay = () => {
+    const target = replayReturnRef.current;
+    if (!target) return;
+    playbackRef.current = null;
+    replayReturnRef.current = null;
+    setReplayStatus("idle");
+    setShowReplay(false);
+    setShowIntro(target.showIntro);
+    setShowReport(target.showReport);
+    setGame({
+      ...target.state,
+      paused: target.showIntro || target.showReport ? true : !resumeAfterReplayRef.current,
+    });
+    setSelectedId(target.selectedId);
+    setBuildMode(target.buildMode);
+    setConnectFrom(target.connectFrom);
+  };
+
   const closeOperationsReport = () => {
+    if (replayStatus === "complete" && replayReturnRef.current) {
+      returnFromReplay();
+      return;
+    }
     setShowReport(false);
     if (!game.gameOver) {
       setGame((current) => ({ ...current, paused: !resumeAfterReportRef.current }));
@@ -920,6 +928,9 @@ export function StackCityGame() {
 
   const startGuidedRun = () => {
     const fresh = createInitialState(selectedScenario, selectedSeed, selectedWorkshop);
+    playbackRef.current = null;
+    replayReturnRef.current = null;
+    setReplayStatus("idle");
     resumeAfterTourRef.current = true;
     setShowIntro(false);
     setShowGuide(false);
@@ -939,6 +950,9 @@ export function StackCityGame() {
 
   const startUnguidedRun = () => {
     const fresh = createInitialState(selectedScenario, selectedSeed, selectedWorkshop);
+    playbackRef.current = null;
+    replayReturnRef.current = null;
+    setReplayStatus("idle");
     setShowIntro(false);
     setShowReport(false);
     setGame({ ...fresh, paused: false, tutorialComplete: true });
@@ -968,6 +982,9 @@ export function StackCityGame() {
   const resetGame = () => {
     if (game.tick > 0 && !game.reportRecorded) archiveRun(game, "manual");
     const fresh = createInitialState("growth", DEFAULT_CHALLENGE_SEED);
+    playbackRef.current = null;
+    replayReturnRef.current = null;
+    setReplayStatus("idle");
     removeStoredValue(SAVE_KEY);
     for (const key of LEGACY_SAVE_KEYS) removeStoredValue(key);
     setGame(fresh);
@@ -1009,8 +1026,14 @@ export function StackCityGame() {
 
   return (
     <main
-      className={`game-shell ${game.settings.reducedMotion ? "reduce-motion" : ""} ${game.settings.highContrast ? "high-contrast" : ""}`}
+      className={`game-shell ${game.settings.reducedMotion ? "reduce-motion" : ""} ${game.settings.highContrast ? "high-contrast" : ""} ${replayStatus === "playing" ? "replay-playing" : ""}`}
     >
+      {replayStatus === "playing" && (
+        <div className="replay-playing-banner" role="status">
+          <span><strong>Strategy replay</strong><small>Reconstructing recorded decisions at 4× speed · tick {game.tick}</small></span>
+          <button type="button" onClick={stopReplay}>Stop &amp; review</button>
+        </div>
+      )}
       <header className="topbar">
         <div className="brand-lockup">
           <div className="brand-mark" aria-hidden="true"><span>SC</span></div>
@@ -1285,7 +1308,7 @@ export function StackCityGame() {
                 const repairCost = incidentRepairCost(incident);
                 return (
                   <article className={`incident-card ${incident.severity}`} key={incident.id}>
-                    <div className="incident-title"><span>!</span><div><strong>{incident.title}</strong><small>{building ? BUILDINGS[building.kind].name : "Unknown service"} · {Math.ceil(incident.remaining / 2)}s</small></div></div>
+                    <div className="incident-title"><span>!</span><div><strong>{incident.title}</strong><small>{building ? BUILDINGS[building.kind].name : "Unknown service"} · {Math.ceil(incident.remaining / 2)}s</small></div>{(incident.chainStep ?? 0) > 0 && <b>Chain {Math.min(3, (incident.chainStep ?? 0) + 1)}/3</b>}</div>
                     <p>{incident.message}</p>
                     <button type="button" onClick={() => repairIncident(incident.id)} disabled={game.money < repairCost}>Resolve · {money(repairCost)}</button>
                   </article>
@@ -1386,6 +1409,7 @@ export function StackCityGame() {
           <div className="shortcut-list"><span><kbd>Space</kbd> pause</span><span><kbd>Esc</kbd> cancel tool</span></div>
           <button type="button" className="settings-tour-button" onClick={replayTour}>Replay guided walkthrough</button>
           <button type="button" className="settings-tour-button" onClick={openOperationsReport}>Open operations review</button>
+          <button type="button" className="settings-tour-button" onClick={openReplayLab}>Open run replay lab</button>
           <a className="settings-legal-link" href={BETA_FEEDBACK_URL} target="_blank" rel="noreferrer">Report beta feedback</a>
           <Link className="settings-legal-link" href="/legal">Legal &amp; privacy center</Link>
           <button type="button" className="danger-outline-button" onClick={() => setShowReset(true)}>Start a new city</button>
@@ -1402,7 +1426,17 @@ export function StackCityGame() {
         />
       )}
 
-      {showIntro && !game.gameOver && !showWorkshop && (
+      {showReplay && (
+        <ReplayLab
+          currentCode={replayCode}
+          currentActionCount={game.replayActions.length}
+          currentEndTick={game.tick}
+          onClose={closeReplayLab}
+          onPlay={playReplay}
+        />
+      )}
+
+      {showIntro && !game.gameOver && !showWorkshop && !showReplay && (
         <div className="modal-backdrop">
           <section className="intro-modal" role="dialog" aria-modal="true" aria-labelledby="intro-title">
             <div className="intro-visual" aria-hidden="true">
@@ -1422,7 +1456,7 @@ export function StackCityGame() {
               <h2 id="intro-title">Build the infrastructure.<br /><em>Survive the traffic.</em></h2>
               <p>You’re the mayor of a digital city. Place services, connect the request path, scale bottlenecks, and keep users happy when production gets messy.</p>
               <div className="intro-features">
-                <span><b>13</b> service types</span><span><b>3</b> operations drills</span><span><b>Local</b> autosave</span>
+                <span><b>13</b> service types</span><span><b>6</b> campaign drills</span><span><b>Local</b> autosave</span>
               </div>
               {restoredExistingCity || game.tick > 0 ? (
                 <div className="intro-actions">
@@ -1475,6 +1509,7 @@ export function StackCityGame() {
                 </>
               )}
               <button className="intro-guide-button" type="button" onClick={() => setShowGuide(true)}>Read the architect’s field guide</button>
+              <button className="intro-guide-button" type="button" onClick={openReplayLab}>Open a shared run replay</button>
               <div className="intro-trust-links">
                 <a className="intro-legal-link" href={BETA_FEEDBACK_URL} target="_blank" rel="noreferrer">Send beta feedback</a>
                 <Link className="intro-legal-link" href="/legal">Privacy · Terms · Accessibility</Link>
@@ -1553,7 +1588,7 @@ export function StackCityGame() {
                 <h2 id="report-title">{game.gameOver ? "Outage postmortem" : game.objectiveIndex >= OBJECTIVES.length ? "Campaign debrief" : "Live run analysis"}</h2>
                 <p>{scenarioDefinition.name} · wave {game.wave} · {elapsed(game.tick)}</p>
               </div>
-              {!game.gameOver && <button className="close-button" type="button" onClick={closeOperationsReport} aria-label="Close operations review">×</button>}
+              {(!game.gameOver || replayStatus === "complete") && <button className="close-button" type="button" onClick={closeOperationsReport} aria-label={replayStatus === "complete" ? "Return from strategy replay" : "Close operations review"}>×</button>}
             </header>
 
             <div className="report-hero">
@@ -1572,6 +1607,7 @@ export function StackCityGame() {
                 <span className="eyebrow">Replay this pressure profile</span>
                 <code>{challengeCode}</code>
                 <button type="button" onClick={() => void copyChallenge(challengeCode)}>Copy challenge code</button>
+                <button type="button" onClick={openReplayLab}>Export or play full replay</button>
                 <small aria-live="polite">{copyStatus || "Code contains only bounded game rules and seed."}</small>
               </div>
             </div>
@@ -1580,7 +1616,7 @@ export function StackCityGame() {
               <article><span>Avg availability</span><strong className={operationsReport.averageAvailability >= 0.99 ? "metric-good" : "metric-bad"}>{percent(operationsReport.averageAvailability, 2)}</strong><small>Target 99.00%</small></article>
               <article><span>SLO compliance</span><strong>{percent(operationsReport.sloCompliance, 0)}</strong><small>Availability · latency · errors</small></article>
               <article><span>Error-budget burn</span><strong className={operationsReport.errorBudgetBurn <= 1 ? "metric-good" : "metric-bad"}>{operationsReport.errorBudgetBurn.toFixed(1)}×</strong><small>{operationsReport.errorBudgetBurn <= 1 ? "Within budget" : "Budget overspent"}</small></article>
-              <article><span>Incidents</span><strong>{game.telemetry.incidentsStarted}</strong><small>{game.telemetry.incidentsAutoRecovered} auto-recovered</small></article>
+              <article><span>Incidents</span><strong>{game.telemetry.incidentsStarted}</strong><small>{game.telemetry.incidentEscalations} chain escalations</small></article>
               <article><span>Mean recovery</span><strong>{operationsReport.meanTimeToRecoverySeconds ? `${operationsReport.meanTimeToRecoverySeconds.toFixed(1)}s` : "—"}</strong><small>{game.telemetry.incidentsResolved} resolved</small></article>
               <article><span>Cost / 1k requests</span><strong>{operationsReport.costPerThousandRequests ? money(operationsReport.costPerThousandRequests) : "—"}</strong><small>{money(game.lifetimeRevenue)} revenue</small></article>
             </div>
@@ -1613,6 +1649,13 @@ export function StackCityGame() {
               </section>
             </div>
 
+            <ShareScorecard
+              state={game}
+              report={operationsReport}
+              scenarioName={scenarioDefinition.name}
+              challengeCode={challengeCode}
+            />
+
             <section className="run-history" aria-labelledby="run-history-title">
               <div className="report-section-heading">
                 <div><span className="eyebrow">Private runbook</span><h3 id="run-history-title">Local run history</h3></div>
@@ -1640,7 +1683,7 @@ export function StackCityGame() {
             </section>
 
             <footer className="report-actions">
-              {!game.gameOver && <button className="secondary-button" type="button" onClick={closeOperationsReport}>{game.objectiveIndex >= OBJECTIVES.length ? "Continue in endless mode" : "Return to city"}</button>}
+              {(!game.gameOver || replayStatus === "complete") && <button className="secondary-button" type="button" onClick={closeOperationsReport}>{replayStatus === "complete" ? "Return to saved city" : game.objectiveIndex >= OBJECTIVES.length ? "Continue in endless mode" : "Return to city"}</button>}
               <button className="primary-button" type="button" onClick={resetGame}>{game.gameOver ? "Rebuild the city" : "Start a new challenge"}</button>
             </footer>
           </section>

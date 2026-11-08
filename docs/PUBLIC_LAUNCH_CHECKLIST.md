@@ -16,6 +16,12 @@ The current build is intentionally low-data:
 - public challenge codes carry only a scenario, deterministic seed, checksum,
   and, for Workshop drills, bounded gameplay rules; free-form local titles and
   saved player state are excluded;
+- optional R1 replay codes add at most 600 bounded, timestamped in-game
+  decisions; they exclude names, browser history, run summaries, local titles,
+  and real-world timestamps, and imported playback cannot replace the active
+  local save;
+- scorecard SVGs and LinkedIn captions are generated locally and are downloaded
+  or copied only at the player's request;
 - a statically rendered Legal & Trust Center explains the current data flow,
   terms, children's privacy posture, accessibility target, and report channels;
 - Vercel receives ordinary hosting request data under its own privacy notice;
@@ -135,6 +141,7 @@ Useful primary guidance:
   `npm audit --omit=dev --audit-level=moderate` from a clean checkout.
 - [ ] Play the guided and unguided starts on desktop and phone widths; verify
   directed connections, all reliability controls, canary promotion and rollback,
+  incident-chain containment, replay export/import/playback, scorecard download,
   save/restore, clear history, legal navigation, and browser back navigation.
 - [ ] Verify the production response headers, `/robots.txt`, `/sitemap.xml`,
   canonical URLs, social preview, 404 page, and custom-domain HTTPS.

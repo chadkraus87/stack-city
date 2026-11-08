@@ -22,6 +22,9 @@ architecture explanations, and portfolio-friendly polish.
    monetization gate.
 8. Add a campaign map, local daily challenge, and validated Scenario Workshop
    with shareable rules, architectural caps, and custom incident decks.
+9. Expand to three campaign packs, model bounded incident chains, add
+   deterministic operator-tape playback, and generate privacy-safe portfolio
+   scorecards entirely in the browser.
 
 ## Definition of done for this release
 
@@ -45,3 +48,7 @@ architecture explanations, and portfolio-friendly polish.
 - Public beta hardening adds honest persistence status, graceful error and 404
   recovery, install metadata, privacy-safe feedback intake, and a pinned CI
   quality gate without adding accounts, analytics, or a backend.
+- Six campaign drills cover foundation, delivery, data, and reliability
+  pressure; unresolved incidents can escalate through at most three stages.
+- Replays are bounded, checksummed, strict-data imports that reuse live game
+  transitions, and scorecard exports contain only selected aggregate results.

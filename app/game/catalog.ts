@@ -2,6 +2,7 @@ import type {
   Achievement,
   BuildingDefinition,
   BuildingKind,
+  CampaignPackDefinition,
   ObjectiveDefinition,
   ScenarioDefinition,
   ScenarioId,
@@ -13,6 +14,7 @@ export const GRID_ROWS = 6;
 export const SCENARIOS: Record<ScenarioId, ScenarioDefinition> = {
   growth: {
     id: "growth",
+    packId: "foundation",
     name: "Steady Growth",
     difficulty: "Standard",
     description: "Build from a modest starter stack while traffic rises at a predictable pace.",
@@ -21,10 +23,13 @@ export const SCENARIOS: Record<ScenarioId, ScenarioDefinition> = {
     trafficGrowth: 0.17,
     waveTraffic: 18,
     incidentRisk: 1,
+    incidentDeck: "mixed",
+    chainRisk: 0.12,
     revenueMultiplier: 1,
   },
   "launch-day": {
     id: "launch-day",
+    packId: "foundation",
     name: "Launch Day",
     difficulty: "Advanced",
     description: "A high-profile release sends demand climbing fast. Scale ahead of each wave.",
@@ -33,10 +38,43 @@ export const SCENARIOS: Record<ScenarioId, ScenarioDefinition> = {
     trafficGrowth: 0.25,
     waveTraffic: 26,
     incidentRisk: 1.2,
+    incidentDeck: "compute",
+    chainRisk: 0.22,
     revenueMultiplier: 1.16,
+  },
+  "edge-surge": {
+    id: "edge-surge",
+    packId: "scale-delivery",
+    name: "Edge Surge",
+    difficulty: "Advanced",
+    description: "A global campaign pushes the edge and platform layers through sharp regional bursts.",
+    startingMoney: 36500,
+    baseTraffic: 66,
+    trafficGrowth: 0.28,
+    waveTraffic: 30,
+    incidentRisk: 1.35,
+    incidentDeck: "network",
+    chainRisk: 0.34,
+    revenueMultiplier: 1.22,
+  },
+  "data-storm": {
+    id: "data-storm",
+    packId: "scale-delivery",
+    name: "Data Storm",
+    difficulty: "Expert",
+    description: "Cache churn and storage pressure test whether the data path can absorb sustained demand.",
+    startingMoney: 38000,
+    baseTraffic: 54,
+    trafficGrowth: 0.23,
+    waveTraffic: 25,
+    incidentRisk: 1.55,
+    incidentDeck: "data",
+    chainRisk: 0.46,
+    revenueMultiplier: 1.2,
   },
   "chaos-lab": {
     id: "chaos-lab",
+    packId: "reliability",
     name: "Chaos Lab",
     difficulty: "Expert",
     description: "Frequent failures put observability, redundancy, and your reserve budget to the test.",
@@ -45,11 +83,49 @@ export const SCENARIOS: Record<ScenarioId, ScenarioDefinition> = {
     trafficGrowth: 0.2,
     waveTraffic: 20,
     incidentRisk: 1.8,
+    incidentDeck: "mixed",
+    chainRisk: 0.58,
     revenueMultiplier: 1.1,
+  },
+  "resilience-sprint": {
+    id: "resilience-sprint",
+    packId: "reliability",
+    name: "Resilience Sprint",
+    difficulty: "Expert",
+    description: "Fast incident chains reward observability, reserves, and decisive containment.",
+    startingMoney: 40500,
+    baseTraffic: 62,
+    trafficGrowth: 0.27,
+    waveTraffic: 29,
+    incidentRisk: 2.1,
+    incidentDeck: "mixed",
+    chainRisk: 0.78,
+    revenueMultiplier: 1.3,
   },
 };
 
 export const SCENARIO_LIST = Object.values(SCENARIOS);
+
+export const CAMPAIGN_PACKS: CampaignPackDefinition[] = [
+  {
+    id: "foundation",
+    name: "Foundation Runbook",
+    description: "Learn the request path, then scale a high-profile release.",
+    scenarioIds: ["growth", "launch-day"],
+  },
+  {
+    id: "scale-delivery",
+    name: "Scale & Delivery",
+    description: "Operate edge-heavy and data-heavy systems under sustained growth.",
+    scenarioIds: ["edge-surge", "data-storm"],
+  },
+  {
+    id: "reliability",
+    name: "Reliability Lab",
+    description: "Contain cascading failures and preserve the error budget.",
+    scenarioIds: ["chaos-lab", "resilience-sprint"],
+  },
+];
 
 export const BUILDINGS: Record<BuildingKind, BuildingDefinition> = {
   dns: {
@@ -358,10 +434,14 @@ export const ACHIEVEMENT_CATALOG: Achievement[] = [
 ];
 
 export const INCIDENTS = [
-  { title: "CPU saturation", message: "A hot deployment is starving request workers.", severity: "warning" as const, domain: "compute" as const },
-  { title: "Dependency timeout", message: "Downstream calls are waiting past their deadline.", severity: "critical" as const, domain: "network" as const },
-  { title: "Connection pool exhausted", message: "New data connections cannot be opened.", severity: "critical" as const, domain: "data" as const },
-  { title: "Memory pressure", message: "Evictions and retries are increasing latency.", severity: "warning" as const, domain: "compute" as const },
-  { title: "Packet loss", message: "Intermittent network loss is forcing retries.", severity: "warning" as const, domain: "network" as const },
-  { title: "Cache stampede", message: "Many requests are rebuilding the same expired value.", severity: "critical" as const, domain: "data" as const },
+  { id: "cpu-saturation", title: "CPU saturation", message: "A hot deployment is starving request workers.", severity: "warning" as const, domain: "compute" as const, nextId: "retry-storm" },
+  { id: "dependency-timeout", title: "Dependency timeout", message: "Downstream calls are waiting past their deadline.", severity: "critical" as const, domain: "network" as const, nextId: "health-check-flap" },
+  { id: "connection-pool", title: "Connection pool exhausted", message: "New data connections cannot be opened.", severity: "critical" as const, domain: "data" as const, nextId: "replica-lag" },
+  { id: "memory-pressure", title: "Memory pressure", message: "Evictions and retries are increasing latency.", severity: "warning" as const, domain: "compute" as const, nextId: "cpu-saturation" },
+  { id: "packet-loss", title: "Packet loss", message: "Intermittent network loss is forcing retries.", severity: "warning" as const, domain: "network" as const, nextId: "dependency-timeout" },
+  { id: "cache-stampede", title: "Cache stampede", message: "Many requests are rebuilding the same expired value.", severity: "critical" as const, domain: "data" as const, nextId: "database-hotspot" },
+  { id: "retry-storm", title: "Retry storm", message: "Unbounded retries are amplifying pressure across the compute tier.", severity: "critical" as const, domain: "compute" as const, nextId: "dependency-timeout", followUpOnly: true },
+  { id: "health-check-flap", title: "Health-check flap", message: "Unstable probes are repeatedly removing healthy capacity from rotation.", severity: "warning" as const, domain: "network" as const, nextId: "cpu-saturation", followUpOnly: true },
+  { id: "replica-lag", title: "Replica lag", message: "Delayed writes are forcing expensive reads against the primary data path.", severity: "critical" as const, domain: "data" as const, nextId: "cache-stampede", followUpOnly: true },
+  { id: "database-hotspot", title: "Database hotspot", message: "A narrow key range is concentrating load on one storage partition.", severity: "critical" as const, domain: "data" as const, nextId: "connection-pool", followUpOnly: true },
 ];

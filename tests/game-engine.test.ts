@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { applyPlayerAction } from "../app/game/actions.ts";
+import { CAMPAIGN_PACKS, SCENARIOS } from "../app/game/catalog.ts";
 import {
   analyzeBottleneck,
   calculateMetrics,
@@ -22,6 +24,11 @@ import {
   simulateTick,
   startCanaryDeployment,
 } from "../app/game/engine.ts";
+import {
+  createReplayCode,
+  parseReplayCode,
+  replayToEnd,
+} from "../app/game/replay.ts";
 import type { Building, Connection, GameState, Incident, WorkshopScenario } from "../app/game/types.ts";
 
 function connectedState(extraBuildings: Building[], extraConnections: Connection[]): GameState {
@@ -298,7 +305,7 @@ test("custom scenarios change deterministic pressure and enforce incident domain
   const second = createInitialState("growth", 9191, workshop);
   const incident = createIncident(first, 0.4);
 
-  assert.equal(first.version, 5);
+  assert.equal(first.version, 6);
   assert.equal(first.money, 42_000);
   assert.equal(first.metrics.traffic, 92);
   assert.deepEqual(first, second);
@@ -444,7 +451,7 @@ test("version 1 saves migrate safely to the current growth scenario", () => {
   const restored = restoreGameState(legacy);
 
   assert.ok(restored);
-  assert.equal(restored.version, 5);
+  assert.equal(restored.version, 6);
   assert.equal(restored.workshop, null);
   assert.equal(restored.scenario, "growth");
   assert.equal(restored.challengeSeed, 82491);
@@ -462,7 +469,7 @@ test("version 2 saves migrate without trusting missing telemetry", () => {
   const restored = restoreGameState(legacy);
 
   assert.ok(restored);
-  assert.equal(restored.version, 5);
+  assert.equal(restored.version, 6);
   assert.equal(restored.workshop, null);
   assert.equal(restored.scenario, "launch-day");
   assert.equal(restored.challengeSeed, 82491);
@@ -486,7 +493,7 @@ test("version 3 saves gain safe operations defaults and directed links", () => {
   const restored = restoreGameState(legacy);
 
   assert.ok(restored);
-  assert.equal(restored.version, 5);
+  assert.equal(restored.version, 6);
   assert.equal(restored.workshop, null);
   assert.deepEqual(restored.operations, {
     retryPolicy: "off",
@@ -510,8 +517,110 @@ test("version 4 saves gain an empty Workshop boundary", () => {
   const restored = restoreGameState(legacy);
 
   assert.ok(restored);
-  assert.equal(restored.version, 5);
+  assert.equal(restored.version, 6);
   assert.equal(restored.workshop, null);
   assert.equal(restored.scenario, "chaos-lab");
   assert.equal(restored.challengeSeed, 9001);
+});
+
+test("campaign packs expose six distinct deterministic drills", () => {
+  const scenarioIds = CAMPAIGN_PACKS.flatMap((pack) => pack.scenarioIds);
+  assert.equal(CAMPAIGN_PACKS.length, 3);
+  assert.equal(scenarioIds.length, 6);
+  assert.equal(new Set(scenarioIds).size, 6);
+  assert.deepEqual(new Set(scenarioIds), new Set(Object.keys(SCENARIOS)));
+  for (const scenario of scenarioIds) {
+    assert.deepEqual(parseChallengeCode(createChallengeCode(scenario, 91234)), {
+      scenario,
+      seed: 91234,
+    });
+  }
+});
+
+test("player actions export to a checked replay and reconstruct the same run", () => {
+  let state = createInitialState("edge-surge", 987654321);
+  state = applyPlayerAction(state, { tick: 0, type: "build", kind: "cache", x: 4, y: 2 });
+  const cache = state.buildings.find((building) => building.kind === "cache");
+  assert.ok(cache);
+  state = applyPlayerAction(state, { tick: 0, type: "connect", from: "api-1", to: cache.id });
+  state = { ...state, paused: false };
+  for (let index = 0; index < 32; index += 1) state = simulateTick(state);
+  state = applyPlayerAction(state, { tick: state.tick, type: "retry", policy: "bounded" });
+  state = applyPlayerAction(state, { tick: state.tick, type: "breaker", enabled: true });
+
+  const code = createReplayCode(state);
+  const recording = parseReplayCode(code);
+  assert.ok(recording);
+  assert.equal(recording.actions.length, 4);
+  assert.equal(recording.endTick, state.tick);
+  const replayed = replayToEnd(recording);
+
+  assert.deepEqual(replayed.buildings, state.buildings);
+  assert.deepEqual(replayed.connections, state.connections);
+  assert.deepEqual(replayed.operations, state.operations);
+  assert.deepEqual(replayed.incidents, state.incidents);
+  assert.deepEqual(replayed.metrics, state.metrics);
+  assert.deepEqual(replayed.telemetry, state.telemetry);
+  assert.equal(replayed.money, state.money);
+  assert.equal(parseReplayCode(`${code.slice(0, -1)}0`), null);
+});
+
+test("shared replays exclude a private Workshop title", () => {
+  const privateTitle = "Private hiring rehearsal";
+  const workshop: WorkshopScenario = {
+    ...DEFAULT_WORKSHOP_SCENARIO,
+    name: privateTitle,
+    template: "data-storm",
+  };
+  const code = createReplayCode(createInitialState("data-storm", 424242, workshop));
+  const recording = parseReplayCode(code);
+
+  assert.equal(code.includes(privateTitle), false);
+  assert.ok(recording?.workshop);
+  assert.equal(recording.workshop.name, "Shared replay drill");
+  assert.equal(recording.workshop.template, "data-storm");
+});
+
+test("expired incidents deterministically escalate through bounded chains", () => {
+  let chainState: GameState | null = null;
+  for (let challengeSeed = 0; challengeSeed < 100 && !chainState; challengeSeed += 1) {
+    const initial = createInitialState("resilience-sprint", challengeSeed);
+    const incident: Incident = {
+      id: "incident-100-web-1",
+      definitionId: "dependency-timeout",
+      buildingId: "web-1",
+      title: "Dependency timeout",
+      message: "Downstream calls are waiting past their deadline.",
+      severity: "critical",
+      remaining: 1,
+      startedAt: 100,
+      chainId: "chain-100-web-1",
+      chainStep: 0,
+    };
+    const candidate = simulateTick({
+      ...initial,
+      paused: false,
+      tick: 100,
+      incidents: [incident],
+      telemetry: { ...initial.telemetry, incidentsStarted: 1 },
+    });
+    if (candidate.telemetry.incidentEscalations === 1) chainState = candidate;
+  }
+  assert.ok(chainState);
+  assert.equal(chainState.incidents.length, 1);
+  assert.equal(chainState.incidents[0].chainStep, 1);
+  assert.equal(chainState.incidents[0].definitionId, "health-check-flap");
+  assert.ok(chainState.events.some((event) => /Incident chain escalated/.test(event.message)));
+});
+
+test("save validation rejects malformed replay actions", () => {
+  const state = createInitialState();
+  assert.equal(restoreGameState({
+    ...state,
+    replayActions: [{ tick: 0, type: "build", kind: "script", x: 0, y: 0 }],
+  }), null);
+  assert.equal(restoreGameState({
+    ...state,
+    replayActions: [{ tick: state.tick + 1, type: "canary-rollback" }],
+  }), null);
 });

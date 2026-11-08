@@ -17,6 +17,7 @@ import type {
   Incident,
   Metrics,
   OperationsReport,
+  ReplayAction,
   RunEndReason,
   RunSummary,
   RunTelemetry,
@@ -68,6 +69,7 @@ function createEmptyTelemetry(): RunTelemetry {
     incidentsStarted: 0,
     incidentsResolved: 0,
     incidentsAutoRecovered: 0,
+    incidentEscalations: 0,
     totalResolutionTicks: 0,
     peakTraffic: 0,
     peakLatency: 0,
@@ -111,7 +113,7 @@ export function createInitialState(
     ? Math.max(0, Math.min(0xffffffff, challengeSeed)) >>> 0
     : DEFAULT_CHALLENGE_SEED;
   const base: GameState = {
-    version: 5,
+    version: 6,
     scenario: selectedScenario,
     workshop: safeWorkshop,
     challengeSeed: normalizedSeed,
@@ -154,6 +156,7 @@ export function createInitialState(
       progress: 0,
       revision: 0,
     },
+    replayActions: [],
     settings: { sound: true, reducedMotion: false, highContrast: false },
   };
   return { ...base, metrics: calculateMetrics(base) };
@@ -173,7 +176,10 @@ export function getScenarioDefinition(
     trafficGrowth: state.workshop.trafficGrowth,
     waveTraffic: state.workshop.waveTraffic,
     incidentRisk: state.workshop.incidentRisk,
+    incidentDeck: state.workshop.incidentDeck,
+    chainRisk: Math.min(0.7, 0.12 + state.workshop.incidentRisk * 0.2),
     revenueMultiplier: state.workshop.revenueMultiplier,
+    packId: SCENARIOS[state.workshop.template].packId,
   };
 }
 
@@ -593,7 +599,7 @@ function evaluateAchievements(state: GameState, metrics: Metrics): [Achievement[
 
 export function createIncident(state: GameState, random: number): Incident | null {
   const connectedIds = connectedBuildingIds(state.buildings, state.connections);
-  const deck = state.workshop?.incidentDeck ?? "mixed";
+  const deck = getScenarioDefinition(state).incidentDeck;
   const matchesDeck = (building: Building) => {
     if (deck === "mixed") return true;
     const category = BUILDINGS[building.kind].category;
@@ -609,18 +615,82 @@ export function createIncident(state: GameState, random: number): Incident | nul
   );
   if (candidates.length === 0) return null;
   const building = candidates[Math.floor(random * candidates.length) % candidates.length];
+  const baseDefinitions = INCIDENTS.filter((definition) => !definition.followUpOnly);
   const definitions = deck === "mixed"
-    ? INCIDENTS
-    : INCIDENTS.filter((definition) => definition.domain === deck);
+    ? baseDefinitions
+    : baseDefinitions.filter((definition) => definition.domain === deck);
   const definition = definitions[(state.tick + Math.floor(random * 100)) % definitions.length];
   return {
     id: `incident-${state.tick}-${building.id}`,
+    definitionId: definition.id,
     buildingId: building.id,
     title: definition.title,
     message: definition.message,
     severity: definition.severity,
     remaining: definition.severity === "critical" ? 26 : 18,
     startedAt: state.tick,
+    chainId: `chain-${state.tick}-${building.id}`,
+    chainStep: 0,
+  };
+}
+
+function deterministicFraction(value: string, seed: number): number {
+  let hash = (2166136261 ^ seed) >>> 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return hash / 4294967296;
+}
+
+function createFollowUpIncident(
+  state: GameState,
+  expired: Incident,
+  tick: number,
+): Incident | null {
+  const currentStep = expired.chainStep ?? 0;
+  if (currentStep >= 2) return null;
+  const definition = INCIDENTS.find((candidate) =>
+    candidate.id === expired.definitionId || candidate.title === expired.title,
+  );
+  if (!definition?.nextId) return null;
+  const nextDefinition = INCIDENTS.find((candidate) => candidate.id === definition.nextId);
+  if (!nextDefinition) return null;
+  const scenario = getScenarioDefinition(state);
+  if (deterministicFraction(`${expired.id}:${tick}`, state.challengeSeed) >= scenario.chainRisk) {
+    return null;
+  }
+
+  const occupied = new Set(state.incidents.map((incident) => incident.buildingId));
+  const downstreamIds = state.connections
+    .filter((connection) => connection.from === expired.buildingId)
+    .map((connection) => connection.to);
+  const candidates = state.buildings.filter((building) =>
+    !occupied.has(building.id)
+      && building.health > 0
+      && (downstreamIds.includes(building.id) || building.id === expired.buildingId),
+  );
+  const fallback = state.buildings.find((building) =>
+    building.id === expired.buildingId && !occupied.has(building.id) && building.health > 0,
+  );
+  const choices = candidates.length > 0 ? candidates : fallback ? [fallback] : [];
+  if (choices.length === 0) return null;
+  const targetIndex = Math.floor(
+    deterministicFraction(`${expired.chainId ?? expired.id}:target`, state.seed) * choices.length,
+  ) % choices.length;
+  const target = choices[targetIndex];
+  const chainStep = currentStep + 1;
+  return {
+    id: `incident-${tick}-${target.id}-chain-${chainStep}`,
+    definitionId: nextDefinition.id,
+    buildingId: target.id,
+    title: nextDefinition.title,
+    message: nextDefinition.message,
+    severity: nextDefinition.severity,
+    remaining: nextDefinition.severity === "critical" ? 26 : 18,
+    startedAt: tick,
+    chainId: expired.chainId ?? `chain-${expired.startedAt}-${expired.buildingId}`,
+    chainStep,
   };
 }
 
@@ -629,6 +699,7 @@ function updateTelemetry(
   metrics: Metrics,
   tick: number,
   incidentsStarted: number,
+  incidentEscalations: number,
   resolvedIncidents: Incident[],
 ): RunTelemetry {
   const shouldSample = tick === 1 || tick % ARCHITECTURE_SAMPLE_INTERVAL === 0;
@@ -659,6 +730,7 @@ function updateTelemetry(
     incidentsStarted: telemetry.incidentsStarted + incidentsStarted,
     incidentsResolved: telemetry.incidentsResolved + resolvedIncidents.length,
     incidentsAutoRecovered: telemetry.incidentsAutoRecovered + resolvedIncidents.length,
+    incidentEscalations: telemetry.incidentEscalations + incidentEscalations,
     totalResolutionTicks: telemetry.totalResolutionTicks + resolutionTicks,
     peakTraffic: Math.max(telemetry.peakTraffic, metrics.traffic),
     peakLatency: Math.max(telemetry.peakLatency, metrics.latency),
@@ -686,6 +758,8 @@ export function simulateTick(state: GameState): GameState {
   const expiredIncidents = state.incidents.filter((incident) => incident.remaining <= 1);
   const expiredIds = new Set(expiredIncidents.map((incident) => incident.id));
   const events = [...state.events];
+  let incidentsStarted = 0;
+  let incidentEscalations = 0;
   if (expiredIds.size > 0) {
     events.unshift({
       id: `auto-recover-${tick}`,
@@ -693,6 +767,19 @@ export function simulateTick(state: GameState): GameState {
       tone: "info" as const,
       message: "An incident auto-recovered after its retry window.",
     });
+    for (const expired of expiredIncidents) {
+      const followUp = createFollowUpIncident({ ...state, tick, incidents }, expired, tick);
+      if (!followUp) continue;
+      incidents = [...incidents, followUp];
+      incidentsStarted += 1;
+      incidentEscalations += 1;
+      events.unshift({
+        id: `chain-${followUp.id}`,
+        tick,
+        tone: "bad",
+        message: `Incident chain escalated to ${followUp.title}. Contain it before the next service fails.`,
+      });
+    }
   }
 
   const metricsBefore = calculateMetrics({ ...state, tick, incidents });
@@ -709,12 +796,11 @@ export function simulateTick(state: GameState): GameState {
       * (state.release.status === "canary" ? 1.08 : 1)
       * (state.operations.retryPolicy === "aggressive" ? 1.12 : 1),
   );
-  let incidentsStarted = 0;
   if (tick > 18 && tick % incidentInterval === 0 && random < incidentChance) {
     const incident = createIncident({ ...state, tick, incidents }, random);
     if (incident) {
       incidents = [...incidents, incident];
-      incidentsStarted = 1;
+      incidentsStarted += 1;
       events.unshift({
         id: `event-${incident.id}`,
         tick,
@@ -802,6 +888,7 @@ export function simulateTick(state: GameState): GameState {
     metrics,
     tick,
     incidentsStarted,
+    incidentEscalations,
     expiredIncidents,
   );
   if (canaryOutcome === "completed") {
@@ -970,12 +1057,18 @@ export function resolveIncident(state: GameState, incidentId: string): GameState
 const SCENARIO_CODES: Record<ScenarioId, string> = {
   growth: "G",
   "launch-day": "L",
+  "edge-surge": "E",
+  "data-storm": "D",
   "chaos-lab": "C",
+  "resilience-sprint": "R",
 };
 const CODE_SCENARIOS: Record<string, ScenarioId> = {
   G: "growth",
   L: "launch-day",
+  E: "edge-surge",
+  D: "data-storm",
   C: "chaos-lab",
+  R: "resilience-sprint",
 };
 
 const WORKSHOP_DECK_CODES = {
@@ -1072,7 +1165,7 @@ export function parseChallengeCode(
   value: string,
 ): { scenario: ScenarioId; seed: number } | null {
   const normalized = value.trim().toUpperCase();
-  const match = /^SC1-([GLC])-([0-9A-Z]{1,7})-([0-9A-Z]{6})$/.exec(normalized);
+  const match = /^SC1-([GLEDCR])-([0-9A-Z]{1,7})-([0-9A-Z]{6})$/.exec(normalized);
   if (!match) return null;
   const scenario = CODE_SCENARIOS[match[1]];
   const seed = Number.parseInt(match[2], 36);
@@ -1423,7 +1516,63 @@ function isSafeText(value: unknown, maximumLength: number): value is string {
     });
 }
 
-function restoreTelemetry(value: unknown, gameTick: number, legacyVersion = false): RunTelemetry | null {
+function restoreReplayActions(value: unknown, gameTick: number): ReplayAction[] | null {
+  if (!Array.isArray(value) || value.length > 600) return null;
+  const actions: ReplayAction[] = [];
+  let previousTick = -1;
+  for (const candidate of value) {
+    if (!isRecord(candidate)
+      || !isIntegerBetween(candidate.tick, 0, gameTick)
+      || candidate.tick < previousTick
+      || typeof candidate.type !== "string") return null;
+    const tick = candidate.tick;
+    previousTick = tick;
+    switch (candidate.type) {
+      case "build":
+        if (typeof candidate.kind !== "string" || !VALID_BUILDING_KINDS.has(candidate.kind)
+          || !isIntegerBetween(candidate.x, 0, 7) || !isIntegerBetween(candidate.y, 0, 5)) return null;
+        actions.push({ tick, type: "build", kind: candidate.kind as BuildingKind, x: candidate.x, y: candidate.y });
+        break;
+      case "connect":
+        if (typeof candidate.from !== "string" || !SAFE_ID.test(candidate.from)
+          || typeof candidate.to !== "string" || !SAFE_ID.test(candidate.to)) return null;
+        actions.push({ tick, type: "connect", from: candidate.from, to: candidate.to });
+        break;
+      case "upgrade":
+      case "decommission":
+      case "canary-start":
+        if (typeof candidate.buildingId !== "string" || !SAFE_ID.test(candidate.buildingId)) return null;
+        actions.push({ tick, type: candidate.type, buildingId: candidate.buildingId });
+        break;
+      case "resolve":
+        if (typeof candidate.incidentId !== "string" || !SAFE_ID.test(candidate.incidentId)) return null;
+        actions.push({ tick, type: "resolve", incidentId: candidate.incidentId });
+        break;
+      case "retry":
+        if (candidate.policy !== "off" && candidate.policy !== "bounded" && candidate.policy !== "aggressive") return null;
+        actions.push({ tick, type: "retry", policy: candidate.policy });
+        break;
+      case "breaker":
+      case "autoscaling":
+        if (typeof candidate.enabled !== "boolean") return null;
+        actions.push({ tick, type: candidate.type, enabled: candidate.enabled });
+        break;
+      case "canary-rollback":
+        actions.push({ tick, type: "canary-rollback" });
+        break;
+      default:
+        return null;
+    }
+  }
+  return actions;
+}
+
+function restoreTelemetry(
+  value: unknown,
+  gameTick: number,
+  legacyVersion = false,
+  legacyIncidentChains = false,
+): RunTelemetry | null {
   if (!isRecord(value)
     || !isIntegerBetween(value.sampleCount, 0, MAX_TICK)
     || !isFiniteBetween(value.totalDemand, 0, 1_000_000_000_000_000)
@@ -1438,6 +1587,7 @@ function restoreTelemetry(value: unknown, gameTick: number, legacyVersion = fals
     || !isIntegerBetween(value.incidentsStarted, 0, MAX_TICK)
     || !isIntegerBetween(value.incidentsResolved, 0, value.incidentsStarted)
     || !isIntegerBetween(value.incidentsAutoRecovered, 0, value.incidentsResolved)
+    || (!legacyIncidentChains && !isIntegerBetween(value.incidentEscalations, 0, value.incidentsStarted))
     || !isFiniteBetween(value.totalResolutionTicks, 0, 100_000_000_000)
     || !isFiniteBetween(value.peakTraffic, 0, 1_000_000_000)
     || !isFiniteBetween(value.peakLatency, 0, 10_000_000)
@@ -1493,6 +1643,7 @@ function restoreTelemetry(value: unknown, gameTick: number, legacyVersion = fals
     incidentsStarted: value.incidentsStarted,
     incidentsResolved: value.incidentsResolved,
     incidentsAutoRecovered: value.incidentsAutoRecovered,
+    incidentEscalations: legacyIncidentChains ? 0 : value.incidentEscalations as number,
     totalResolutionTicks: value.totalResolutionTicks,
     peakTraffic: value.peakTraffic,
     peakLatency: value.peakLatency,
@@ -1516,7 +1667,7 @@ function restoreTelemetry(value: unknown, gameTick: number, legacyVersion = fals
 export function restoreGameState(value: unknown): GameState | null {
   if (!isRecord(value)
     || (value.version !== 1 && value.version !== 2 && value.version !== 3
-      && value.version !== 4 && value.version !== 5)) return null;
+      && value.version !== 4 && value.version !== 5 && value.version !== 6)) return null;
 
   const scenario = value.version === 1
     ? "growth"
@@ -1530,10 +1681,10 @@ export function restoreGameState(value: unknown): GameState | null {
       : null
     : DEFAULT_CHALLENGE_SEED;
   if (challengeSeed === null) return null;
-  const workshop = value.version === 5 && value.workshop !== null
+  const workshop = value.version >= 5 && value.workshop !== null
     ? restoreWorkshopScenario(value.workshop)
     : null;
-  if (value.version === 5
+  if (value.version >= 5
     && ((value.workshop !== null && !workshop)
       || (workshop && workshop.template !== scenario))) return null;
 
@@ -1572,7 +1723,7 @@ export function restoreGameState(value: unknown): GameState | null {
       && (typeof value.release.targetBuildingId !== "string"
         || !SAFE_ID.test(value.release.targetBuildingId)))
   )) return null;
-  if (value.version === 5
+  if (value.version >= 5
     && workshop?.autoscalingAllowed === false
     && (value.operations as Record<string, unknown>).autoscaling === true) return null;
 
@@ -1668,18 +1819,32 @@ export function restoreGameState(value: unknown): GameState | null {
       || !isSafeText(candidate.message, 300)
       || (candidate.severity !== "warning" && candidate.severity !== "critical")
       || !isIntegerBetween(candidate.remaining, 1, 10_000)
-      || !isIntegerBetween(candidate.startedAt, 0, MAX_TICK)) {
+      || !isIntegerBetween(candidate.startedAt, 0, MAX_TICK)
+      || (candidate.definitionId !== undefined
+        && (typeof candidate.definitionId !== "string" || !SAFE_ID.test(candidate.definitionId)))
+      || (candidate.chainId !== undefined
+        && (typeof candidate.chainId !== "string" || !SAFE_ID.test(candidate.chainId)))
+      || (candidate.chainStep !== undefined && !isIntegerBetween(candidate.chainStep, 0, 2))) {
       return null;
     }
     incidentIds.add(candidate.id);
     incidents.push({
       id: candidate.id,
+      ...(typeof candidate.definitionId === "string" && SAFE_ID.test(candidate.definitionId)
+        ? { definitionId: candidate.definitionId }
+        : {}),
       buildingId: candidate.buildingId,
       title: candidate.title,
       message: candidate.message,
       severity: candidate.severity,
       remaining: candidate.remaining,
       startedAt: candidate.startedAt,
+      ...(typeof candidate.chainId === "string" && SAFE_ID.test(candidate.chainId)
+        ? { chainId: candidate.chainId }
+        : {}),
+      ...(isIntegerBetween(candidate.chainStep, 0, 2)
+        ? { chainStep: candidate.chainStep }
+        : {}),
     });
   }
 
@@ -1733,12 +1898,16 @@ export function restoreGameState(value: unknown): GameState | null {
   }
 
   const telemetry = value.version >= 3
-    ? restoreTelemetry(value.telemetry, value.tick, value.version === 3)
+    ? restoreTelemetry(value.telemetry, value.tick, value.version === 3, value.version < 6)
     : {
       ...createEmptyTelemetry(),
       incidentsStarted: incidents.length,
     };
   if (!telemetry) return null;
+  const replayActions = value.version >= 6
+    ? restoreReplayActions(value.replayActions, value.tick)
+    : [];
+  if (!replayActions) return null;
 
   const operations = value.version >= 4
     ? {
@@ -1767,7 +1936,7 @@ export function restoreGameState(value: unknown): GameState | null {
   }
 
   const restored: GameState = {
-    version: 5,
+    version: 6,
     scenario,
     workshop,
     challengeSeed,
@@ -1794,6 +1963,7 @@ export function restoreGameState(value: unknown): GameState | null {
     telemetry,
     operations,
     release,
+    replayActions,
     settings: {
       sound: value.settings.sound,
       reducedMotion: value.settings.reducedMotion,
@@ -1804,7 +1974,7 @@ export function restoreGameState(value: unknown): GameState | null {
 }
 
 export function isValidGameState(value: unknown): value is GameState {
-  return isRecord(value) && value.version === 5 && restoreGameState(value) !== null;
+  return isRecord(value) && value.version === 6 && restoreGameState(value) !== null;
 }
 
 export function restoreRunHistory(value: unknown): RunSummary[] {

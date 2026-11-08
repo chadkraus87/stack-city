@@ -26,13 +26,18 @@ test("build prerenders the complete Stack City game shell", async () => {
   assert.match(html, /Beta feedback/);
   assert.match(html, /Steady Growth/);
   assert.match(html, /Launch Day/);
+  assert.match(html, /Edge Surge/);
+  assert.match(html, /Data Storm/);
   assert.match(html, /Chaos Lab/);
+  assert.match(html, /Resilience Sprint/);
+  assert.match(html, /Scale &amp; Delivery/);
   assert.match(html, /Daily incident/);
   assert.match(html, /Scenario Workshop/);
   assert.match(html, /Choose the next pressure profile/);
   assert.match(html, /Deterministic challenge code/);
   assert.match(html, /Load code/);
   assert.match(html, /New seed/);
+  assert.match(html, /Open a shared run replay/);
   assert.match(html, /Reliability controls/);
   assert.match(html, /Service flow/);
   assert.match(html, /Privacy · Terms · Accessibility/);
@@ -71,8 +76,34 @@ test("prerenders transparent privacy, terms, and accessibility disclosures", asy
   assert.match(html, /not directed to children under/);
   assert.match(html, /WCAG 2\.2 Level AA/);
   assert.match(html, /Workshop codes may also contain bounded game settings/);
-  assert.match(html, /November 7, 2026/);
+  assert.match(html, /November 8, 2026/);
+  assert.match(html, /up to 600 timestamped game decisions/);
+  assert.match(html, /not autosaved over your active city/);
+  assert.match(html, /Scorecard images and LinkedIn captions are generated entirely in the browser/);
   assert.match(html, /security\/advisories\/new/);
+});
+
+test("ships deterministic replay, campaign-pack, incident-chain, and scorecard safeguards", async () => {
+  const [actions, replay, scorecard, catalog, engine] = await Promise.all([
+    readFile(resolve(projectRoot, "app/game/actions.ts"), "utf8"),
+    readFile(resolve(projectRoot, "app/game/replay.ts"), "utf8"),
+    readFile(resolve(projectRoot, "app/game/ReplayAndScorecard.tsx"), "utf8"),
+    readFile(resolve(projectRoot, "app/game/catalog.ts"), "utf8"),
+    readFile(resolve(projectRoot, "app/game/engine.ts"), "utf8"),
+  ]);
+
+  assert.match(actions, /MAX_REPLAY_ACTIONS = 600/);
+  assert.match(actions, /applyPlayerAction/);
+  assert.match(replay, /MAX_REPLAY_CODE_LENGTH = 80_000/);
+  assert.match(replay, /TextDecoder\("utf-8", \{ fatal: true \}\)/);
+  assert.match(replay, /checksum\(parts\[1\]\)/);
+  assert.match(scorecard, /escapeXml/);
+  assert.match(scorecard, /1200/);
+  assert.match(scorecard, /Copy LinkedIn caption/);
+  assert.match(catalog, /Scale &amp; Delivery|Scale & Delivery/);
+  assert.match(catalog, /Resilience Sprint/);
+  assert.match(engine, /Incident chain escalated/);
+  assert.match(engine, /restoreReplayActions/);
 });
 
 test("ships beta recovery, feedback, persistence, and automation safeguards", async () => {
@@ -91,6 +122,9 @@ test("ships beta recovery, feedback, persistence, and automation safeguards", as
   assert.match(game, /storageAvailable\(\)/);
   assert.match(game, /Local save unavailable/);
   assert.match(game, /pagehide/);
+  assert.match(game, /replayStatus !== "idle"/);
+  assert.match(game, /replayReturnRef/);
+  assert.match(game, /Return to saved city/);
   assert.match(game, /restoredExistingCity \|\| game\.tick > 0/);
   assert.match(errorPage, /Retry Stack City/);
   assert.match(notFound, /Return to Stack City/);

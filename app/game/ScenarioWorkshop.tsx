@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useId, useRef, useState } from "react";
-import { SCENARIOS, SCENARIO_LIST } from "./catalog.ts";
+import { CAMPAIGN_PACKS, SCENARIOS, SCENARIO_LIST } from "./catalog.ts";
 import {
   createWorkshopCode,
   parseWorkshopCode,
@@ -51,24 +51,41 @@ export function CampaignMap({
         </div>
         <small>{completedScenarios.size} / {SCENARIO_LIST.length} core drills completed</small>
       </div>
-      <div className="campaign-route" role="group" aria-label="Campaign scenarios">
-        {SCENARIO_LIST.map((scenario, index) => {
-          const selected = selection === `scenario:${scenario.id}`;
-          const complete = completedScenarios.has(scenario.id);
+      <div className="campaign-packs">
+        {CAMPAIGN_PACKS.map((pack, packIndex) => {
+          const completedInPack = pack.scenarioIds.filter((id) => completedScenarios.has(id)).length;
           return (
-            <button
-              className={`campaign-node ${selected ? "selected" : ""}`}
-              type="button"
-              aria-pressed={selected}
-              key={scenario.id}
-              onClick={() => onScenario(scenario.id)}
-            >
-              <span className="campaign-node-index">0{index + 1}</span>
-              <span><strong>{scenario.name}</strong><small>{scenario.difficulty}</small></span>
-              <b>{complete ? "✓ Complete" : "Open"}</b>
-            </button>
+            <section className="campaign-pack" aria-labelledby={`campaign-pack-${pack.id}`} key={pack.id}>
+              <div className="campaign-pack-heading">
+                <span>Pack {String(packIndex + 1).padStart(2, "0")}</span>
+                <div><strong id={`campaign-pack-${pack.id}`}>{pack.name}</strong><small>{pack.description}</small></div>
+                <b>{completedInPack}/{pack.scenarioIds.length}</b>
+              </div>
+              <div className="campaign-route" role="group" aria-label={`${pack.name} scenarios`}>
+                {pack.scenarioIds.map((scenarioId, scenarioIndex) => {
+                  const scenario = SCENARIOS[scenarioId];
+                  const selected = selection === `scenario:${scenario.id}`;
+                  const complete = completedScenarios.has(scenario.id);
+                  return (
+                    <button
+                      className={`campaign-node ${selected ? "selected" : ""}`}
+                      type="button"
+                      aria-pressed={selected}
+                      key={scenario.id}
+                      onClick={() => onScenario(scenario.id)}
+                    >
+                      <span className="campaign-node-index">{packIndex + 1}.{scenarioIndex + 1}</span>
+                      <span><strong>{scenario.name}</strong><small>{scenario.difficulty}</small></span>
+                      <b>{complete ? "✓ Complete" : "Open"}</b>
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
           );
         })}
+      </div>
+      <div className="campaign-utilities" role="group" aria-label="Daily and custom scenarios">
         <button
           className={`campaign-node daily ${selection === "daily" ? "selected" : ""}`}
           type="button"

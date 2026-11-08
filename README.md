@@ -51,23 +51,27 @@ it on the map, and connects it to the API request path.
 ## What is in the game
 
 - 13 infrastructure types across edge, compute, data, and platform layers
-- three operations scenarios with distinct budgets, traffic curves, revenue,
-  and incident pressure
+- six operations scenarios organized into three campaign packs with distinct
+  budgets, traffic curves, revenue, incident decks, and cascade pressure
 - a campaign map, deterministic daily incident, and local Scenario Workshop
 - checksum-protected Workshop codes for sharing rules without sharing local titles
 - a deterministic simulation of traffic, capacity, saturation, latency,
   availability, errors, revenue, operating cost, and user satisfaction
 - building placement, network links, four upgrade levels, repairs, and resale
-- incidents with service damage, recovery windows, and on-call costs
+- incidents with service damage, recovery windows, on-call costs, and bounded
+  three-step escalation chains when an incident is left unresolved
 - directed request routing with animated flow direction and a live critical-path view
 - per-service utilization, latency, errors, queue depth, reachability, and health status
 - operator-controlled bounded or aggressive retries, circuit breaking, and autoscaling
 - 10% canary releases with live progress, promotion rewards, and safe rollback
 - deterministic challenge codes for replaying or sharing a scenario seed
+- checksum-validated R1 operator tapes that reconstruct up to 600 timestamped
+  player decisions without accounts, uploads, or personal data
 - bounded operational telemetry with SLO, error-budget, incident, cost, and
   architecture-score analysis
 - a responsive after-action report with bottleneck diagnosis, recommendations,
   and a private 12-run local history
+- locally generated 1200 × 630 SVG scorecards and LinkedIn-ready captions
 - eight campaign objectives, five ranks, and ten achievements
 - an optional first-run walkthrough, adaptive live hints, and an architecture
   field guide
@@ -84,11 +88,12 @@ it on the map, and connects it to the API request path.
 Open the [live game](https://stack-city-eight.vercel.app). First choose an
 operations drill:
 
-- **Steady Growth** is the balanced campaign and the best first city.
-- **Launch Day** provides more capital and revenue, but traffic grows much
-  faster.
-- **Chaos Lab** raises incident pressure and rewards observability and
-  redundancy.
+- **Foundation Runbook:** Steady Growth is the best first city; Launch Day
+  adds a faster release curve.
+- **Scale & Delivery:** Edge Surge emphasizes network and platform failures;
+  Data Storm concentrates pressure on caches and storage.
+- **Reliability Lab:** Chaos Lab raises general incident pressure; Resilience
+  Sprint makes unresolved incidents much more likely to cascade.
 
 Then choose one of two learning paths:
 
@@ -115,6 +120,15 @@ The campaign map adds two local-first ways to play:
   and a compute, data, network, or mixed incident deck. Choose **Save & select
   drill** to play it. Paste an `SW1` code in the Workshop to validate and import
   another ruleset safely.
+
+Use **Open a shared run replay** on the start screen, or **Open run replay lab**
+in Settings, to paste an `R1` operator tape. Stack City validates its checksum,
+size, scenario data, and action list before reconstructing the run at 4× speed.
+Press Escape or choose **Stop & review** to pause playback. Exporting a replay
+captures only bounded game decisions and the deterministic scenario—not local
+Workshop titles, names, save history, or real-world timestamps. Playback runs
+in a temporary sandbox: it is never autosaved, and leaving its review restores
+the exact city and interface state you had before opening the shared run.
 
 ### 2. Read the current mission
 
@@ -201,6 +215,9 @@ Completed, failed, and retired runs add a compact summary to the private local
 runbook. The newest 12 summaries remain on the current device. Starting a new
 challenge preserves those summaries while replacing the active city save.
 Use **Clear history** in the review for an in-app, confirmed erase operation.
+The review also provides **Export or play full replay**, **Download scorecard**,
+and **Copy LinkedIn caption** controls. Scorecards are generated as 1200 × 630
+SVG files entirely in the browser, so nothing is uploaded by the game.
 
 ## Controls
 
@@ -280,8 +297,8 @@ to 12 compact run summaries in the browser's `localStorage`. This data never lea
 as untrusted input, and is validated before restoration. The parsers reject
 oversized payloads, invalid numeric ranges, duplicate IDs, overlapping
 buildings, forged connections, malformed events or telemetry, forged challenge
-codes, and unknown catalog data. Version 1, 2, 3, and 4 saves migrate locally to
-the current version 5 schema; legacy links are oriented into a safe request
+codes, and unknown catalog data. Version 1 through 5 saves migrate locally to
+the current version 6 schema; legacy links are oriented into a safe request
 flow. Starting a new city replaces the active save but keeps
 the local runbook; browser site-data controls erase both.
 The review's **Clear history** control erases only archived summaries and leaves
@@ -306,6 +323,9 @@ flowchart LR
   Canary["Canary release state machine"] --> Engine
   Telemetry --> Report["After-action review"]
   Report --> History["Validated local runbook"]
+  Actions["Bounded player actions"] --> Replay["Checked R1 replay"]
+  Replay --> Engine
+  Report --> Card["Local SVG scorecard"]
   Seed["Shareable challenge code"] --> Engine
   Catalog["Central balance catalog"] --> Engine
   Catalog --> UI
@@ -319,6 +339,9 @@ Important files:
 
 - `app/game/catalog.ts` — scenarios, services, missions, incidents, ranks, and balance
 - `app/game/engine.ts` — deterministic state transitions and simulation rules
+- `app/game/actions.ts` — validated player actions shared by live play and replays
+- `app/game/replay.ts` — bounded replay encoding, parsing, and deterministic playback
+- `app/game/ReplayAndScorecard.tsx` — replay exchange and local sharing artifacts
 - `app/game/StackCityGame.tsx` — interaction and presentation controller
 - `app/globals.css` — responsive visual system
 - `tests/` — deterministic simulation and production-render checks

@@ -16,16 +16,25 @@ Core capacity is the lowest supported layer among frontend, API, and database.
 Optional services modify that model: a CDN offloads frontend traffic, caches
 reduce database demand, load balancers make replicated APIs useful, queues and
 workers absorb asynchronous bursts, and monitoring reduces incident impact.
-Built-in scenario definitions remain centralized in the catalog and change only input
-pressure—starting budget, base demand, growth, wave size, incident risk, and
-revenue—so the simulation stays deterministic and directly testable.
+Built-in scenario definitions remain centralized in the catalog. Six drills are
+organized into Foundation, Scale & Delivery, and Reliability packs and change
+only bounded inputs—starting budget, base demand, growth, wave size, incident
+deck, escalation risk, and revenue—so the simulation stays deterministic and
+directly testable.
 
-Version 5 adds a bounded `WorkshopScenario` overlay. It can change the same
+Version 5 added a bounded `WorkshopScenario` overlay. It can change the same
 pressure inputs plus building and upgrade caps, autoscaling availability, and a
 typed incident deck. The engine validates the overlay at creation, import, and
 save restoration; invalid or mismatched overlays are discarded. Daily
 challenges are derived locally from a strict calendar date and remain fully
 deterministic.
+
+Version 6 adds bounded incident chains and deterministic operator tapes. A
+critical or warning incident that reaches the end of its recovery window can
+advance through at most two catalog-defined follow-ups. The scenario's seeded
+chain-risk value decides whether escalation occurs; resolving the incident
+before expiry contains the chain. Escalations are included in bounded run
+telemetry and scorecards.
 
 Every placed service gets a derived `ServiceSignal`: incoming and served
 requests, capacity, utilization, latency, errors, queue depth, reachability,
@@ -48,6 +57,17 @@ and the seed; its free-form local title is excluded. Parsing is strict and
 bounded, so loading either code creates a fresh deterministic run without
 importing another player's saved state.
 
+Player decisions pass through the pure `applyPlayerAction` transition. The same
+transition is used by live controls and replay playback, preventing the replay
+path from becoming a second implementation of game rules. An R1 replay contains
+the scenario, seed, optional bounded Workshop settings, end tick, and at most
+600 ordered actions. A compact base64url payload is length-capped, checksummed,
+decoded as strict UTF-8, validated field by field, and replayed through the
+normal deterministic simulation. Local titles, settings, history, personal
+data, and wall-clock timestamps are excluded. Playback is an ephemeral session:
+the autosave and page-hide flush retain the pre-replay state, and exiting the
+review restores the prior game and interaction context.
+
 The engine accumulates bounded `RunTelemetry`: request demand and service,
 operating cost, per-signal SLO compliance, incident starts and recoveries,
 recovery duration, peaks, and architecture samples. Architecture history is
@@ -61,8 +81,8 @@ The UI stores a single immutable `GameState`. Mutations are small transition
 functions. Save data uses a versioned envelope in `localStorage`; the parser
 caps payload and collection sizes, validates every consumed scalar and nested
 record, requires unique building positions and connections, and rebuilds
-catalog-owned achievement copy. Version 1–4 saves migrate to version 5 with safe
-defaults for challenge, telemetry, reliability, and release fields. Legacy
+catalog-owned achievement copy. Version 1–5 saves migrate to version 6 with safe
+defaults for challenge, telemetry, reliability, release, and replay fields. Legacy
 undirected connections are oriented by service stage during migration. Malformed or
 incompatible payloads are discarded. Settings are device-local and contain no
 sensitive data.
@@ -71,6 +91,10 @@ The client probes local storage before reading saves, reports persistence loss
 to the player, and keeps gameplay available in memory when storage is blocked.
 Normal writes remain debounced; `pagehide` performs a final best-effort save.
 No fallback sends game state to a server.
+
+Scorecards are generated as escaped, self-contained SVG strings in the browser.
+The download and LinkedIn-caption controls use platform Blob and Clipboard APIs;
+they do not submit results to Stack City or a third party.
 
 Run history uses a separate versioned payload capped at 12 summaries. A separate
 5 KB-capped payload stores one validated Workshop draft. The history parser
