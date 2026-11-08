@@ -107,7 +107,7 @@ test("ships deterministic replay, campaign-pack, incident-chain, and scorecard s
 });
 
 test("ships beta recovery, feedback, persistence, and automation safeguards", async () => {
-  const [layout, manifest, game, errorPage, notFound, feedbackForm, workflow] = await Promise.all([
+  const [layout, manifest, game, errorPage, notFound, feedbackForm, workflow, codeql] = await Promise.all([
     readFile(resolve(projectRoot, "app/layout.tsx"), "utf8"),
     readFile(resolve(projectRoot, "app/manifest.ts"), "utf8"),
     readFile(resolve(projectRoot, "app/game/StackCityGame.tsx"), "utf8"),
@@ -115,6 +115,7 @@ test("ships beta recovery, feedback, persistence, and automation safeguards", as
     readFile(resolve(projectRoot, "app/not-found.tsx"), "utf8"),
     readFile(resolve(projectRoot, ".github/ISSUE_TEMPLATE/beta-feedback.yml"), "utf8"),
     readFile(resolve(projectRoot, ".github/workflows/quality.yml"), "utf8"),
+    readFile(resolve(projectRoot, ".github/workflows/codeql.yml"), "utf8"),
   ]);
 
   assert.match(layout, /manifest:\s*"\/manifest\.webmanifest"/);
@@ -131,4 +132,7 @@ test("ships beta recovery, feedback, persistence, and automation safeguards", as
   assert.match(feedbackForm, /Do not include names, email addresses/);
   assert.match(workflow, /npm run check/);
   assert.match(workflow, /npm audit --audit-level=high/);
+  assert.match(codeql, /security-events: write/);
+  assert.match(codeql, /languages: javascript-typescript/);
+  assert.match(codeql, /github\/codeql-action\/analyze@[0-9a-f]{40}/);
 });

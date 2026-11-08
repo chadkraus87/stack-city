@@ -12,6 +12,11 @@
   <a href="#local-development">Run locally</a>
 </p>
 
+<p align="center">
+  <a href="https://github.com/chadkraus87/stack-city/actions/workflows/quality.yml"><img alt="Quality gate" src="https://github.com/chadkraus87/stack-city/actions/workflows/quality.yml/badge.svg" /></a>
+  <a href="https://github.com/chadkraus87/stack-city/actions/workflows/codeql.yml"><img alt="CodeQL" src="https://github.com/chadkraus87/stack-city/actions/workflows/codeql.yml/badge.svg" /></a>
+</p>
+
 Stack City turns software architecture into a city-building game. Each building
 is a real infrastructure concept, every glowing packet is a user request, and
 every choice changes capacity, latency, availability, operating cost, and user

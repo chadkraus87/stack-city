@@ -72,8 +72,9 @@ Malformed current-version rules, links, or release state are discarded.
 - Dependencies are pinned in `package-lock.json`; the release gate includes
   lint, a production build, deterministic tests, rendered-output checks, and
   dependency audits.
-- GitHub Actions use commit-pinned checkout and Node setup actions. Dependabot
-  monitors npm and workflow dependencies on bounded schedules.
+- GitHub Actions use commit-pinned actions. CodeQL analyzes JavaScript and
+  TypeScript on every main-branch push and pull request, plus a weekly schedule.
+  Dependabot monitors npm and workflow dependencies on bounded schedules.
 - GitHub secret scanning, push protection, Dependabot alerts, and private
   vulnerability reporting should remain enabled for the public repository.
 
